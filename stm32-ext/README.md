@@ -141,3 +141,5 @@ ST の各ツールは、利用者が自身の PC にインストール済みの�
 `subprocess` で呼ぶだけで、再配布していません。`.ioc` / `.cproject` は利用者の
 プロジェクト設定として**読むだけ**で、コード生成は再実装していません。
 `STM32` は STMicroelectronics の商標であり、本プロジェクトはその製品ではありません。
+本ソフトウェアは STMicroelectronics によって承認・後援・提供されたものではなく、
+STMicroelectronics と提携関係にもありません。
