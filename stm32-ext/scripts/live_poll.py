@@ -49,8 +49,9 @@ Usage:
   --extra: extra watch symbol as name=0xaddr:SIZE (repeatable); bypasses the DebugGlobal range
       filter for user-picked variables (e.g. tuner globals). SIZE is mandatory: the width decides
       how many bytes are read and how many hex digits are logged, so it is never assumed.
-  --ensure-pyocd: `pip install --user pyocd`, record the result on stdout, then continue
-      (mock if still unavailable).
+  --ensure-pyocd: install pyocd into a temporary venv (PEP 668 safe), record the
+      result on stdout, then continue (mock if still unavailable). The extension
+      normally does this itself on first run, so this is the manual fallback.
 
 Only stdlib + optional pyocd. Never halts the target. The one exception to read-only is the
 stdin write channel (live_write.py): JSON requests fenced inside the resolved DebugGlobal range,
@@ -110,14 +111,18 @@ def err(message):
 
 
 def ensure_pyocd():
-    """Install pyocd into a venv beside this script; return (ok, detail). Never raises.
+    """Install pyocd into a venv under the system temp dir; return (ok, detail).
 
     `pip install --user` is what this used to run, and it is refused outright on
     any current Debian/Ubuntu: /usr/lib/python3.*/EXTERNALLY-MANAGED makes pip
     exit with PEP 668, so the documented recovery from "pyocd is not installed"
-    failed on exactly the machines that needed it. When the interpreter is
-    externally managed we build a venv instead, which has no such marker, and
-    fall back to --user only where that is still permitted.
+    failed on exactly the machines that needed it. A venv has no such marker.
+
+    The success signal is the INSTALL's exit code, never the venv's: creating a
+    venv is a setup step, and an earlier version returned on it — reporting
+    pyocd installed while the module was still missing, which its own smoke
+    test passed on because the smoke asserted the return value and not the
+    import.
     """
     import subprocess
     import tempfile
@@ -391,9 +396,9 @@ class PyocdProbe:
             from pyocd.core.helpers import ConnectHelper  # noqa: PLC0415
         except ImportError as e:
             raise RuntimeError(
-                "pyocd is not installed. Run "
-                "`python3 scripts/live_poll.py --ensure-pyocd` or "
-                "`pip install --user pyocd`.") from e
+                "pyocd is not installed. The extension installs this on first run "
+                "— reload the window to retry, or run "
+                "`python3 scripts/live_poll.py --ensure-pyocd`.") from e
         # Enumerate BEFORE opening a session. `session_with_chosen_probe` prints
         # "Waiting for a debug probe to be connected..." and blocks forever when
         # nothing is plugged in, so the EXIT_NO_PROBE path was unreachable for

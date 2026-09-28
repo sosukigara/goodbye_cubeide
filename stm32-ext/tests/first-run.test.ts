@@ -6,6 +6,7 @@ import {
   firstRunMessage,
   describeMissingTools,
   TOOL_REQUIREMENTS,
+  toolInstalledSync,
   type ToolRequirement,
 } from "../src/extension.js";
 
@@ -137,5 +138,26 @@ describe("first-run toolchain preflight", () => {
     expect(msg).toContain("python3");
     // It must not smuggle the command block back in.
     expect(msg).not.toContain("apt install");
+  });
+});
+
+describe("setup: the synchronous probe must not misjudge import-only tools", () => {
+  it("never counts pyelftools as missing, though it ships no executable", () => {
+    // pyelftools has no console script, so resolveTool reports "missing" for
+    // it on every machine. If that fed `tools.missing`, setup would start on
+    // every launch and re-run pip against the network every time.
+    expect(toolInstalledSync("pyelftools")).toBe(true);
+  });
+
+  it("still judges a real executable by PATH", () => {
+    expect(toolInstalledSync("stm32ext-definitely-absent-xyz")).toBe(false);
+  });
+
+  it("keeps pyelftools out of the missing list even with everything else present", () => {
+    const reqs = TOOL_REQUIREMENTS.map((r) => ({ ...r, name: r.name }));
+    const r = describeMissingTools(reqs, toolInstalledSync);
+    // Only the machine-specific real tools may be reported; pyelftools must
+    // not appear, or the preflight would never settle.
+    expect(r.missing.map((m) => m.name)).not.toContain("pyelftools");
   });
 });

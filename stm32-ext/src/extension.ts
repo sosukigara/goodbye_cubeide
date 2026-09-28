@@ -41,6 +41,7 @@ import {
   planSetup,
   setVenvDir,
   sidecarPythonNow,
+  venvPython,
 } from "./env/venv";
 import {
   assertCsvHeader,
@@ -2335,7 +2336,17 @@ export const TOOL_REQUIREMENTS: readonly ToolRequirement[] = [
     // contradicts the README and trains people to ignore the notice.
     name: "pyocd",
     needed: "「書き込み」と「Live 監視」が使えません（ビルドは問題なく動きます）",
-    install: "pip install --user pyocd",
+    install: "拡張が起動時に自動で導入します（手動なら `pip install pyocd`）",
+    required: false,
+  },
+  {
+    // Not required, and NOT detectable by PATH: pyelftools ships no console
+    // script, so resolveTool's answer here has nothing to do with whether it
+    // is installed. runSetup probes it by import; it is listed so the
+    // post-install report can name it when the import fails.
+    name: "pyelftools",
+    needed: "DWARF の型情報が付きません（値は `0x… 型不明` と表示されます）",
+    install: "拡張が起動時に自動で導入します（手動なら `pip install pyelftools`）",
     required: false,
   },
   {
@@ -2345,6 +2356,24 @@ export const TOOL_REQUIREMENTS: readonly ToolRequirement[] = [
     required: true,
   },
 ];
+
+/**
+ * Tools the synchronous PATH probe is not allowed to judge.
+ *
+ * pyelftools is a library with no console script, so resolveTool answers
+ * "missing" for it on every machine, installed or not. Counting that as a
+ * miss would make `tools.missing` non-empty on every launch, start setup on
+ * every launch, and re-run pip against the network every time — a setup that
+ * never converges. The import probe in runSetup is the check that actually
+ * reflects the dependency, so the sync probe reports these as present and
+ * lets the real test decide.
+ */
+const IMPORT_ONLY_TOOLS: Record<string, true> = { pyelftools: true };
+
+/** Whether the tool is present, as far as a synchronous probe can tell. */
+export function toolInstalledSync(name: string): boolean {
+  return IMPORT_ONLY_TOOLS[name] === true ? true : resolveTool(name).found;
+}
 
 /**
  * Which tools are missing, and the single line to tell the user about it.
@@ -2394,10 +2423,10 @@ export function firstRunMessage(blockers: readonly ToolRequirement[]): string {
 /** STM32: 診断 — ツールチェーン・設定・競合をまとめて点検します。 */
 async function diagnose(channel: vscode.OutputChannel): Promise<void> {
   channel.appendLine("[diagnose] STM32 environment check");
-  const tools = describeMissingTools(TOOL_REQUIREMENTS, (n) => resolveTool(n).found);
+  const tools = describeMissingTools(TOOL_REQUIREMENTS, toolInstalledSync);
   channel.appendLine(`[diagnose] ${tools.summary}`);
   for (const r of TOOL_REQUIREMENTS) {
-    channel.appendLine(`[diagnose]   ${resolveTool(r.name).found ? "OK  " : "MISS"} ${r.name} (${r.needed})`);
+    channel.appendLine(`[diagnose]   ${toolInstalledSync(r.name) ? "OK  " : "MISS"} ${r.name} (${r.needed})`);
   }
   if (tools.install !== "") {
     channel.appendLine("[diagnose] 導入方法:");
@@ -2608,39 +2637,52 @@ export function activate(context: vscode.ExtensionContext): void {
   // flag would be wrong anyway: dismissing a notice about a missing compiler
   // is not the same as having installed one, so the user who ignores it once
   // is exactly the user who needs it again after installing half of it.
-  const tools = describeMissingTools(TOOL_REQUIREMENTS, (n) => resolveTool(n).found);
-  const blockers = tools.missing.filter((m) => m.required);
-  if (blockers.length > 0) {
-    void vscode.window.showWarningMessage(
-      firstRunMessage(blockers),
-      "診断する",
-      "導入手順を開く",
-    ).then((choice) => {
-      if (choice === "診断する") {
-        void vscode.commands.executeCommand("stm32ext.diagnose");
-      } else if (choice === "導入手順を開く") {
-        void vscode.commands.executeCommand(
-          "vscode.open",
-          vscode.Uri.file(join(context.extensionPath, QUICKSTART_RELATIVE_PATH)),
-        );
-      }
-    });
-  }
-
-  // Auto-setup: installing the VSIX is supposed to be enough, so anything a
-  // wheel can provide is fetched here rather than left as a README step. It
-  // only runs when something is actually missing, and `stm32ext.autoSetup`
-  // turns it off for anyone who would rather install by hand.
-  const missingNames = tools.missing.map((m) => m.name);
-  if (missingNames.length > 0 && vscode.workspace.getConfiguration("stm32ext").get<boolean>("autoSetup", true)) {
+  // One notice, not two, and not before setup has had its chance.
+  //
+  // Firing the warning synchronously while runSetup is still pip-installing
+  // told the user their toolchain was missing during the very minute it was
+  // being completed, and then runSetup's own post-install check fired a
+  // second identical modal. With autoSetup off there is no setup to wait for,
+  // so the notice goes out immediately in that case.
+  // setup runs whenever autoSetup is on, even when the PATH probe found
+  // nothing. pyelftools is judged by import, and a machine missing only
+  // pyelftools has an empty missing list — gating on that would leave it
+  // unprovisioned and silently showing "0x… 型不明" forever. runSetup is
+  // cheap when there is nothing to do: one import probe, no download.
+  const tools = describeMissingTools(TOOL_REQUIREMENTS, toolInstalledSync);
+  const autoSetup = vscode.workspace.getConfiguration("stm32ext").get<boolean>("autoSetup", true);
+  if (autoSetup) {
     void runSetup(
       channel,
       join(context.globalStorageUri.fsPath, "venv"),
-      missingNames,
+      tools.missing.map((m) => m.name),
       (bin, args, timeoutMs) => spawnCli(bin, args, timeoutMs),
       context,
     );
+  } else {
+    const blockers = tools.missing.filter((m) => m.required);
+    if (blockers.length > 0) {
+      showMissingTools(context, blockers);
+    }
   }
+}
+
+/** The one notice for a still-missing toolchain, with the two useful actions. */
+function showMissingTools(context: vscode.ExtensionContext, blockers: readonly ToolRequirement[]): void {
+  void vscode.window.showWarningMessage(
+    firstRunMessage(blockers),
+    "診断する",
+    "導入手順を開く",
+  ).then((choice) => {
+    if (choice === "診断する") {
+      void vscode.commands.executeCommand("stm32ext.diagnose");
+    } else if (choice === "導入手順を開く") {
+      void vscode.commands.executeCommand(
+        "vscode.open",
+        vscode.Uri.file(join(context.extensionPath, QUICKSTART_RELATIVE_PATH)),
+      );
+    }
+  });
 }
 
 /**
@@ -2663,8 +2705,14 @@ async function runSetup(
   run: (bin: string, args: string[], timeoutMs: number) => Promise<{ exitCode: number; stdout: string; stderr: string }>,
   context: vscode.ExtensionContext,
 ): Promise<void> {
-  const plan = planSetup(missingTools);
-  channel.appendLine(`[setup] 不足ツール: ${missingTools.join(", ") || "(なし)"}`);
+  // pyelftools has no executable, so resolveTool can never see it: a library
+  // that is absent produces no PATH miss, and the symptom the user meets is a
+  // type tree that degrades to "0x… 型不明" with nothing ever saying why.
+  // Probing it by import is the only check that reflects the real dependency.
+  const elftoolsMissing = !(await importProbe(run, sidecarPythonNow(), "elftools"));
+  const tools = elftoolsMissing ? [...missingTools, "pyelftools"] : missingTools;
+  channel.appendLine(`[setup] 不足ツール: ${tools.join(", ") || "(なし)"}`);
+  const plan = planSetup(tools);
   if (plan.packages.length > 0) {
     channel.appendLine(`[setup] venv を作成して導入します: ${plan.packages.join(", ")}`);
     const { python, result } = await ensureVenv(venvDir, "python3", run);
@@ -2677,27 +2725,44 @@ async function runSetup(
   for (const tool of plan.manual) {
     channel.appendLine(`[setup] 自動導入対象外 (要手動): ${tool}`);
   }
+  // setVenvDir before re-resolving: resolveTool only finds the ninja setup
+  // just installed because the venv's bin directory is now in its search path.
   setVenvDir(venvDir);
-  // Re-resolve after installing: a ninja that setup just placed in the venv is
-  // only findable because resolveTool now searches the venv's bin directory.
-  const still = describeMissingTools(TOOL_REQUIREMENTS, (n) => resolveTool(n).found);
+  const still = describeMissingTools(TOOL_REQUIREMENTS, toolInstalledSync);
+  const stillElftools = await importProbe(
+    run,
+    venvPython(venvDir),
+    "elftools",
+  );
   const left = still.missing.filter((m) => m.required);
-  if (left.length > 0) {
-    channel.appendLine(`[setup] 自動導入後も不足: ${left.map((m) => m.name).join(", ")}`);
-    void vscode.window.showWarningMessage(
-      firstRunMessage(left),
-      "診断する",
-      "導入手順を開く",
-    ).then((choice) => {
-      if (choice === "診断する") {
-        void vscode.commands.executeCommand("stm32ext.diagnose");
-      } else if (choice === "導入手順を開く") {
-        void vscode.commands.executeCommand(
-          "vscode.open",
-          vscode.Uri.file(join(context.extensionPath, QUICKSTART_RELATIVE_PATH)),
-        );
-      }
-    });
+  const leftNames = [
+    ...left.map((m) => m.name),
+    ...(stillElftools ? ["pyelftools"] : []),
+  ];
+  if (leftNames.length > 0) {
+    channel.appendLine(`[setup] 自動導入後も不足: ${leftNames.join(", ")}`);
+    showMissingTools(
+      context,
+      leftNames.map((n) => TOOL_REQUIREMENTS.find((r) => r.name === n)).filter(
+        (r): r is ToolRequirement => r !== undefined,
+      ),
+    );
+  }
+}
+
+/** True when the interpreter can import the module. */
+async function importProbe(
+  run: (bin: string, args: string[], timeoutMs: number) => Promise<{ exitCode: number }>,
+  python: string,
+  module: string,
+): Promise<boolean> {
+  try {
+    const r = await run(python, ["-c", `import ${module}`], 30_000);
+    return r.exitCode === 0;
+  } catch {
+    // An interpreter that cannot even be spawned is treated as "cannot
+    // import", which is the answer that leads to installing, not to silence.
+    return false;
   }
 }
 

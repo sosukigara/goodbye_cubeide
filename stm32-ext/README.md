@@ -56,7 +56,7 @@ pip install --user pyocd pyelftools
 |---|---|
 | `ninja` | PyPI の `ninja`（実バイナリ同梱）— `apt install ninja-build` が不要になる |
 | `pyocd` | 書き込みと Live 監視 |
-| `pyelftools` | DWARF の型解決。無いと `0x… 型不明` になる |
+| `pyelftools` | DWARF の型解決。無いと `0x… 型不明` になる。実行ファイルを持たないライブラリなので、導入の判断は import で行います |
 
 **自動で入らないもの**（理由も明記します）:
 
