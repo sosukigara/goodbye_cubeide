@@ -252,3 +252,63 @@ describe("watchlist changes are coalesced, not forwarded one at a time", () => {
     }
   });
 });
+
+/**
+ * Host-level watchlist mutation. The webview tests pin the message SHAPE, so
+ * a broken removeNames still leaves them all green — these assert the stored
+ * watchlist actually changes and that a no-op does not restart the sidecar.
+ */
+function liveWithStore(initial: string[]): {
+  live: LivePanelProvider;
+  store: Map<string, unknown>;
+} {
+  const live = new LivePanelProvider(CHANNEL);
+  const store = new Map<string, unknown>([["stm32ext.liveWatch", initial]]);
+  live.configure("/tmp/scripts", {
+    get: (k: string): unknown => store.get(k),
+    update: (k: string, v: unknown): Promise<void> => {
+      store.set(k, v);
+      return Promise.resolve();
+    },
+  } as never);
+  return { live, store };
+}
+
+const watched = (store: Map<string, unknown>): string[] =>
+  store.get("stm32ext.liveWatch") as string[];
+
+const call = (live: LivePanelProvider, fn: "addNames" | "removeNames", raw: string): Promise<void> =>
+  (live as unknown as Record<string, (r: string) => Promise<void>>)[fn]!(raw);
+
+describe("host watchlist mutation (the 削除 path, end to end)", () => {
+  it("removeNames actually shrinks the stored watchlist", async () => {
+    const { live, store } = liveWithStore(["a.b", "drive.motor_timeout"]);
+    await call(live, "removeNames", "drive.motor_timeout");
+    expect(watched(store)).toEqual(["a.b"]);
+  });
+
+  it("removeNames takes the whole subtree of a struct prefix", async () => {
+    const { live, store } = liveWithStore(["drive.a", "drive.b", "sys.loop_hz"]);
+    await call(live, "removeNames", "drive");
+    expect(watched(store)).toEqual(["sys.loop_hz"]);
+  });
+
+  it("addNames grows the stored watchlist", async () => {
+    const { live, store } = liveWithStore(["sys.loop_hz"]);
+    await call(live, "addNames", "drive.mode, backup.armed");
+    expect(watched(store)).toEqual(["sys.loop_hz", "drive.mode", "backup.armed"]);
+  });
+
+  it("re-adding a watched name changes nothing and does not restart", async () => {
+    // The session log showed `+backup.armed (104 -> 104)` followed by SIGKILL
+    // and a fresh spawn: a no-op add tore down a running session.
+    const { live, store } = liveWithStore(["backup.armed", "sys.loop_hz"]);
+    const restart = vi.spyOn(live as unknown as { restart: () => Promise<void> }, "restart")
+      .mockResolvedValue(undefined);
+
+    await call(live, "addNames", "backup.armed");
+
+    expect(watched(store)).toEqual(["backup.armed", "sys.loop_hz"]);
+    expect(restart).not.toHaveBeenCalled();
+  });
+});

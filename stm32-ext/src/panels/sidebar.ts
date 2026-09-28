@@ -236,7 +236,10 @@ export const SIDEBAR_CSS = `<style>`
   // name column stayed at 100px in a 300px sidebar and clipped
   // "loop_period_us". They are declared on both so neither reads as a bug.
   + `table.live th:nth-child(1){width:auto}`
-  + `table.live th:nth-child(2){width:80px}`
+  // 86px, matching td.v below. With table-layout:fixed the <thead> widths win,
+  // so leaving this at 80px silently discarded the td.v change and ellipsised
+  // `0xbf800000` — a clipped hex value reads as a different (wrong) number.
+  + `table.live th:nth-child(2){width:86px}`
   // 84px, not 52: a leaf row carries three buttons (追加 / 変更 / 除外) at 22px
   // each. At 52px `table-layout:fixed` + `overflow:hidden` clipped the
   // rightmost one — 除外, the control the whole row exists for — so it was
