@@ -2276,8 +2276,14 @@ async function writeGraphCsv(channel: vscode.OutputChannel, rows: readonly LiveS
 
 /** globalState key marking that the first-run toolchain notice has been shown. */
 const FIRST_RUN_KEY = "stm32ext.toolchainNoticeShown";
-/** README anchor the "導入手順を開く" button jumps to. */
-const QUICKSTART_URI = "https://github.com/sosukigara/goodbye_cubeide/blob/main/stm32-ext/README.md#クイックスタート-clone-して動かす";
+/**
+ * The quickstart the "導入手順を開く" button opens: the README that ships
+ * INSIDE the .vsix, not a github.com URL. A remote link was wrong twice over
+ * — it pointed at `main` while the default branch was a feature branch (404),
+ * and its `#anchor` had to track a heading slug by hand. A bundled file
+ * cannot rot and works offline.
+ */
+const QUICKSTART_RELATIVE_PATH = "README.md";
 
 /** One external program the extension needs, and how to get it if absent. */
 export interface ToolRequirement {
@@ -2302,31 +2308,35 @@ export const TOOL_REQUIREMENTS: readonly ToolRequirement[] = [
   {
     name: "arm-none-eabi-gcc",
     needed: "ファームウェアのコンパイル",
-    install: "apt install gcc-arm-none-eabi / brew install --cask gcc-arm-embedded",
+    install: "Linux: sudo apt install gcc-arm-none-eabi\nmacOS: brew install --cask gcc-arm-embedded\nWindows: https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads",
     required: true,
   },
   {
     name: "ninja",
     needed: "ビルドの実行",
-    install: "apt install ninja-build / brew install ninja / pip install ninja",
+    install: "Linux: sudo apt install ninja-build\nmacOS: brew install ninja\nWindows: choco install ninja / pip install ninja",
     required: true,
   },
   {
     name: "ccache",
     needed: "ビルドキャッシュ（無くても動きますが遅くなります）",
-    install: "apt install ccache / brew install ccache",
+    install: "Linux: sudo apt install ccache\nmacOS: brew install ccache\nWindows: choco install ccache",
     required: false,
   },
   {
+    // NOT required: the whole point of the pyOCD backend is that the build
+    // and the type tree work without it. Marking it required made this
+    // extension claim "必須ツールが未導入" on a machine that can build, which
+    // contradicts the README and trains people to ignore the notice.
     name: "pyocd",
-    needed: "書き込みと Live 監視",
+    needed: "「書き込み」と「Live 監視」が使えません（ビルドは問題なく動きます）",
     install: "pip install --user pyocd",
-    required: true,
+    required: false,
   },
   {
     name: "python3",
-    needed: "Live 監視のサイドカー",
-    install: "apt install python3 / brew install python3",
+    needed: "DWARF からの型解決と Live 監視のサイドカー",
+    install: "Linux: sudo apt install python3\nmacOS: brew install python3\nWindows: https://www.python.org/downloads/",
     required: true,
   },
 ];
@@ -2566,22 +2576,32 @@ export function activate(context: vscode.ExtensionContext): void {
   channel.appendLine("STM32 extension active (sidebar).");
 
   // First run: say what is missing BEFORE the user hits a build button and
-  // reads "executable file not found". Runs once per machine (not per
-  // window), so a returning user is not nagged, and never blocks activation —
-  // a missing ccache must not stop someone from building.
+  // reads "executable file not found". Never blocks activation.
+  //
+  // The flag is set only when the environment is COMPLETE. Setting it
+  // unconditionally on the first activation meant a user who dismissed the
+  // notice — or who had not installed anything yet — never saw it again,
+  // even after installing half of it. It is keyed per machine, so a returning
+  // user with a working toolchain is not nagged.
   if (context.globalState.get(FIRST_RUN_KEY) !== true) {
-    void context.globalState.update(FIRST_RUN_KEY, true);
     const tools = describeMissingTools(TOOL_REQUIREMENTS, (n) => resolveTool(n).found);
-    if (tools.missing.some((m) => m.required)) {
+    const blockers = tools.missing.filter((m) => m.required);
+    if (blockers.length === 0) {
+      void context.globalState.update(FIRST_RUN_KEY, true);
+    } else {
+      const names = blockers.map((m) => m.name).join(", ");
       void vscode.window.showWarningMessage(
-        `STM32: 必須ツールが未導入です\n\n${tools.install}`,
+        `STM32: 必須ツールが未導入です (${names})\n\n${tools.install}`,
         "診断する",
         "導入手順を開く",
       ).then((choice) => {
         if (choice === "診断する") {
           void vscode.commands.executeCommand("stm32ext.diagnose");
         } else if (choice === "導入手順を開く") {
-          void vscode.commands.executeCommand("vscode.open", vscode.Uri.parse(QUICKSTART_URI));
+          void vscode.commands.executeCommand(
+            "vscode.open",
+            vscode.Uri.file(join(context.extensionPath, QUICKSTART_RELATIVE_PATH)),
+          );
         }
       });
     }

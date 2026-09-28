@@ -2,6 +2,8 @@
 // what to install, in one message, before they press Build and meet
 // "executable file not found".
 import { describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 // extension.ts is the only place the preflight lives, and it imports vscode
 // at module load. The mock only has to satisfy that import — nothing in these
@@ -45,14 +47,37 @@ describe("first-run toolchain preflight", () => {
     const r = describeMissingTools(TOOL_REQUIREMENTS, () => false);
     expect(r.summary).toContain("arm-none-eabi-gcc");
     expect(r.summary).toContain("ninja");
-    expect(r.summary).toContain("pyocd");
     expect(r.summary).toContain("python3");
     // Every blocker carries a copy-pasteable command, not just a noun.
-    for (const line of ["arm-none-eabi-gcc", "ninja", "pyocd", "python3"]) {
+    for (const line of ["arm-none-eabi-gcc", "ninja", "python3"]) {
       expect(r.install).toContain(line);
     }
-    expect(r.install).toContain("apt install");
-    expect(r.install).toContain("pip install");
+  });
+
+  it("does not call pyocd a blocker — the build and type tree work without it", () => {
+    // pyOCD only gates flash and live monitor. Calling it required made the
+    // extension cry "必須ツールが未導入" on a machine that can build, and
+    // contradicted the README.
+    const r = describeMissingTools(TOOL_REQUIREMENTS, (n) => n !== "pyocd");
+    expect(r.summary).toContain("環境 OK");
+    expect(r.install).toBe("");
+    // The wording must say what is lost, so "optional" does not read as
+    // "you lose nothing".
+    const pyocd = TOOL_REQUIREMENTS.find((t) => t.name === "pyocd");
+    expect(pyocd?.required).toBe(false);
+    expect(pyocd?.needed).toContain("使えません");
+  });
+
+  it("offers an install path for every platform, not just apt/brew", () => {
+    // An apt-only line on Windows is both a false "not found" (the exe is
+    // ninja.exe) and a command the user cannot run.
+    for (const r of TOOL_REQUIREMENTS) {
+      expect(r.install).toMatch(/Linux|macOS|Windows|pip install|choco/);
+    }
+    // Anything that is a native tool needs a Windows answer.
+    for (const native of TOOL_REQUIREMENTS.filter((r) => r.install.startsWith("apt"))) {
+      expect(native.install).toContain("Windows");
+    }
   });
 
   it("does not block on an optional tool, but still names it", () => {
@@ -78,5 +103,42 @@ describe("first-run toolchain preflight", () => {
       expect(r.needed.length).toBeGreaterThan(0);
       expect(r.install.trim().length).toBeGreaterThan(0);
     }
+  });
+
+  it("points the quickstart at the README bundled in the vsix", () => {
+    // A github.com URL was wrong twice: it named `main` while the default
+    // branch was a feature branch (404), and the heading anchor had to be
+    // kept in sync by hand. The README ships inside the .vsix, so a relative
+    // path to it cannot rot and works offline.
+    const src = readFileSync(
+      fileURLToPath(new URL("../src/extension.ts", import.meta.url)),
+      "utf8",
+    );
+    expect(src).toContain('const QUICKSTART_RELATIVE_PATH = "README.md"');
+    // Opened as a file against the extension's own install path.
+    expect(src).toContain("vscode.Uri.file(join(context.extensionPath, QUICKSTART_RELATIVE_PATH)");
+    expect(src).not.toContain("github.com/sosukigara/goodbye_cubeide/blob");
+    // And the file it names really is packaged.
+    expect(src).not.toMatch(/QUICKSTART_RELATIVE_PATH = ".*\.md#/);
+  });
+
+  it("only marks the first run done once the environment is complete", () => {
+    // The flag used to be written unconditionally, so anyone who dismissed
+    // the notice never saw it again — not even after installing half of it.
+    const src = readFileSync(
+      fileURLToPath(new URL("../src/extension.ts", import.meta.url)),
+      "utf8",
+    );
+    const at = src.indexOf("globalState.get(FIRST_RUN_KEY)");
+    expect(at).toBeGreaterThan(-1);
+    const block = src.slice(at, at + 900);
+    // The update must live INSIDE the branch that found no blockers, i.e.
+    // after the blockers check and inside its else-free arm.
+    const blockersAt = block.indexOf("blockers.length === 0");
+    const updateAt = block.indexOf("globalState.update(FIRST_RUN_KEY, true)");
+    expect(blockersAt).toBeGreaterThan(-1);
+    expect(updateAt).toBeGreaterThan(blockersAt);
+    // ...and there must be no second, unconditional write before that check.
+    expect(block.slice(0, blockersAt)).not.toContain("globalState.update(FIRST_RUN_KEY");
   });
 });
