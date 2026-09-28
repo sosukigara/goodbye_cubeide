@@ -231,6 +231,11 @@ export function resolveTool(
   name: string,
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
+  // Injected so a test can prove the extra directory is searched without
+  // depending on what this machine happens to have in ~/.local/bin. Asserting
+  // "ninja is found" only passes on a machine that has ninja — which is how a
+  // green suite hid the regression it was written to catch.
+  extraDirs: readonly string[] = EXTRA_TOOL_DIRS,
 ): ToolResolution {
   const searched: string[] = [];
   if (name.includes("/")) {
@@ -239,7 +244,7 @@ export function resolveTool(
   }
   const dirs = [
     ...(env["PATH"] ?? "").split(delimiter),
-    ...EXTRA_TOOL_DIRS,
+    ...extraDirs,
   ];
   // A name that already carries an extension is not given another one.
   const candidates = extname(name) === ""

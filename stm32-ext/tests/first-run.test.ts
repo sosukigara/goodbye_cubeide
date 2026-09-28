@@ -108,37 +108,33 @@ describe("first-run toolchain preflight", () => {
     }
   });
 
-  it("shows the notice again until the environment is actually complete", () => {
-    // The bug: the "seen it" flag was written unconditionally, so a user who
-    // dismissed the notice never saw it again — not even after installing half
-    // of what was missing. That is exactly backwards: nagging is correct while
-    // the problem is still there.
+  it("keeps reminding while a required tool is still missing", () => {
+    // The original bug: a "seen it" flag was written to globalState but never
+    // read to suppress anything, so it was ceremony — and its comment claimed
+    // it stopped nagging a returning user, which it did not. Before that, the
+    // flag was written unconditionally and a user who dismissed the notice
+    // never heard about the tool again, not even after installing half of it.
+    // Nudging while the problem persists is the correct behaviour, so there is
+    // deliberately no stored state: the answer depends only on the blockers.
     const blocker: ToolRequirement = {
       name: "ninja", needed: "ビルド", install: "apt install ninja-build", required: true,
     };
-    // Never shown before, something missing -> show, and do NOT mark done.
-    expect(firstRunDecision(undefined, [blocker])).toEqual({ show: true, markDone: false });
-    // Still missing on a later launch -> show again.
-    expect(firstRunDecision(true, [blocker])).toEqual({ show: true, markDone: false });
-    // Nothing missing -> silent, and this is the one case that marks done.
-    expect(firstRunDecision(undefined, [])).toEqual({ show: false, markDone: true });
-    // Already done and still fine -> never speak again.
-    expect(firstRunDecision(true, [])).toEqual({ show: false, markDone: false });
+    expect(firstRunDecision([blocker])).toBe(true);
+    expect(firstRunDecision([])).toBe(false);
+    // Same answer on the tenth launch as on the first — that is the point.
+    expect(firstRunDecision([blocker])).toBe(true);
   });
 
-  it("only marks done when nothing required is missing", () => {
-    // An optional tool alone must not suppress the check, nor clear the flag
-    // while a required one is still absent.
+  it("ignores an optional tool, which is not worth a notice", () => {
+    // ccache is missing on plenty of machines and the build still works.
+    // Notifying about it trains people to dismiss the notice.
     const opt: ToolRequirement = {
       name: "ccache", needed: "キャッシュ", install: "apt install ccache", required: false,
     };
-    const req: ToolRequirement = {
-      name: "ninja", needed: "ビルド", install: "apt install ninja-build", required: true,
-    };
-    expect(firstRunDecision(undefined, [req]).markDone).toBe(false);
-    expect(firstRunDecision(undefined, [opt, req]).markDone).toBe(false);
-    // The decision takes BLOCKERS, so an optional-only list means all clear.
-    expect(firstRunDecision(undefined, []).markDone).toBe(true);
+    // The decision is fed BLOCKERS, so an optional-only list reads as clear.
+    expect(firstRunDecision([])).toBe(false);
+    // ...and describeMissingTools is what does the filtering.
+    expect(describeMissingTools([opt], () => false).summary).toContain("環境 OK");
   });
 
   it("keeps the user-facing text one line, because a toast collapses newlines", () => {

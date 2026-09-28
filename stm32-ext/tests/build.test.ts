@@ -312,16 +312,19 @@ describe("runNinja resolves the build dir exactly once", () => {
 });
 
 describe("toolchain lookup", () => {
-  it("searches ~/.local/bin even when the supplied PATH omits it", () => {
+  it("finds a tool in an extra dir that the supplied PATH omits", () => {
     // The regression: a desktop session's PATH omits ~/.local/bin, so a tool
-    // living there could not be spawned. Asserting against a real
-    // /usr/bin/ninja made this machine-dependent — a contributor without the
-    // ARM toolchain got a red suite saying nothing about this code. What is
-    // actually guaranteed is the SEARCH, so assert that: the extra directory
-    // is probed even when PATH points somewhere that has nothing.
-    const r = resolveTool("definitely-not-a-real-tool-xyz", { PATH: "/nonexistent" });
-    expect(r.searched.some((p) => p.includes(join(".local", "bin")))).toBe(true);
-    expect(r.found).toBe(false);
+    // living there could not be spawned. The earlier version asserted against
+    // a real /usr/bin/ninja, so it only proved anything on a machine that has
+    // ninja — a green suite that hid the very regression it was written for.
+    // With the extra directory injected, the file is this test's own.
+    const dir = mkdtempSync(join(tmpdir(), "stm32ext-localbin-"));
+    writeFileSync(join(dir, "stm32ext-absent-tool"), "");
+    const r = resolveTool("stm32ext-absent-tool", { PATH: "/nonexistent" }, "linux", [dir]);
+    expect(r.found).toBe(true);
+    expect(r.path).toBe(join(dir, "stm32ext-absent-tool"));
+    // ...and it is genuinely unreachable via PATH alone.
+    expect(resolveTool("stm32ext-absent-tool", { PATH: "/nonexistent" }, "linux", []).found).toBe(false);
   });
   it("reports a searched list when nothing is found", () => {
     const r = resolveTool("definitely-not-a-real-tool-xyz", { PATH: "/usr/bin:/bin" });

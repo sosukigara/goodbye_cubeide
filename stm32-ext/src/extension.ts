@@ -2274,8 +2274,6 @@ async function writeGraphCsv(channel: vscode.OutputChannel, rows: readonly LiveS
   void vscode.window.showInformationMessage(`グラフ CSV を保存しました: ${uri.fsPath} (${rows.length} 行)`);
 }
 
-/** globalState key marking that the first-run toolchain notice has been shown. */
-const FIRST_RUN_KEY = "stm32ext.toolchainNoticeShown";
 /**
  * The quickstart the "導入手順を開く" button opens: the README that ships
  * INSIDE the .vsix, not a github.com URL. A remote link was wrong twice over
@@ -2373,26 +2371,18 @@ export function describeMissingTools(
 }
 
 /**
- * What the first-run notice should do this activation.
+ * Whether to show the first-run toolchain notice.
  *
- * Split out as a pure decision so the one rule that actually matters is
- * testable: the "seen it" flag is written ONLY once nothing is missing.
- * Writing it unconditionally meant a user who dismissed the notice never saw
- * it again, not even after installing half of what was missing — the one
- * path where nagging is exactly the right behaviour.
+ * One rule: while a required tool is missing, say so. There is no
+ * "already seen" flag, deliberately. It was written to globalState but never
+ * read to suppress anything, so it was pure ceremony whose comment claimed it
+ * stopped nagging a returning user — it did not. A stored flag would also be
+ * wrong: dismissing a notice about a missing compiler is not the same as
+ * having installed one, and the user who ignores it once is exactly the user
+ * who needs it again after installing half of it.
  */
-export function firstRunDecision(
-  alreadyShown: unknown,
-  blockers: readonly ToolRequirement[],
-): { show: boolean; markDone: boolean } {
-  // The flag only suppresses the notice once there is nothing left to say.
-  // Keying off `alreadyShown` ALONE is the bug this replaced: a user who
-  // dismissed the notice never heard about the tool again, even after
-  // installing half of it. Nudging is correct while the problem persists.
-  if (blockers.length === 0) {
-    return { show: false, markDone: alreadyShown !== true };
-  }
-  return { show: true, markDone: false };
+export function firstRunDecision(blockers: readonly ToolRequirement[]): boolean {
+  return blockers.length > 0;
 }
 
 /**
@@ -2616,16 +2606,12 @@ export function activate(context: vscode.ExtensionContext): void {
   );
   channel.appendLine("STM32 extension active (sidebar).");
 
-  // First run: say what is missing BEFORE the user hits a build button and
-  // reads "executable file not found". Never blocks activation. The rule
-  // lives in firstRunDecision so it is testable rather than buried here.
+  // Say what is missing BEFORE the user hits a build button and reads
+  // "executable file not found". Never blocks activation. The rule lives in
+  // firstRunDecision so it is testable rather than buried here.
   const tools = describeMissingTools(TOOL_REQUIREMENTS, (n) => resolveTool(n).found);
   const blockers = tools.missing.filter((m) => m.required);
-  const firstRun = firstRunDecision(context.globalState.get(FIRST_RUN_KEY), blockers);
-  if (firstRun.markDone) {
-    void context.globalState.update(FIRST_RUN_KEY, true);
-  }
-  if (firstRun.show) {
+  if (firstRunDecision(blockers)) {
     void vscode.window.showWarningMessage(
       firstRunMessage(blockers),
       "診断する",
