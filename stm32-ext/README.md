@@ -40,8 +40,8 @@ skip されるもの（失敗ではありません）:
 導入例:
 
 ```bash
-sudo apt install gcc-arm-none-eabi ninja-build python3 ccache
-pip install --user pyocd
+sudo apt install gcc-arm-none-eabi ninja-build python3 ccache python3-pyelftools
+pip install --user pyocd pyelftools
 ```
 
 `pyocd` が無くても **ビルドと型解析は動きます**。「何もできない」状況を作らないためです。表の `△` は「その機能だけ使えない」を意味します。
