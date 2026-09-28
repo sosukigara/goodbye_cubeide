@@ -2371,21 +2371,6 @@ export function describeMissingTools(
 }
 
 /**
- * Whether to show the first-run toolchain notice.
- *
- * One rule: while a required tool is missing, say so. There is no
- * "already seen" flag, deliberately. It was written to globalState but never
- * read to suppress anything, so it was pure ceremony whose comment claimed it
- * stopped nagging a returning user — it did not. A stored flag would also be
- * wrong: dismissing a notice about a missing compiler is not the same as
- * having installed one, and the user who ignores it once is exactly the user
- * who needs it again after installing half of it.
- */
-export function firstRunDecision(blockers: readonly ToolRequirement[]): boolean {
-  return blockers.length > 0;
-}
-
-/**
  * The first-run notice text.
  *
  * A VS Code notification is rendered as ONE row: newlines in the message are
@@ -2607,11 +2592,18 @@ export function activate(context: vscode.ExtensionContext): void {
   channel.appendLine("STM32 extension active (sidebar).");
 
   // Say what is missing BEFORE the user hits a build button and reads
-  // "executable file not found". Never blocks activation. The rule lives in
-  // firstRunDecision so it is testable rather than buried here.
+  // "executable file not found". Never blocks activation.
+  //
+  // One rule: while a required tool is missing, say so — every launch. There
+  // is deliberately no "already seen" flag. It used to be written to
+  // globalState but never read to suppress anything, so it was ceremony whose
+  // comment claimed it spared a returning user, which it did not. A stored
+  // flag would be wrong anyway: dismissing a notice about a missing compiler
+  // is not the same as having installed one, so the user who ignores it once
+  // is exactly the user who needs it again after installing half of it.
   const tools = describeMissingTools(TOOL_REQUIREMENTS, (n) => resolveTool(n).found);
   const blockers = tools.missing.filter((m) => m.required);
-  if (firstRunDecision(blockers)) {
+  if (blockers.length > 0) {
     void vscode.window.showWarningMessage(
       firstRunMessage(blockers),
       "診断する",

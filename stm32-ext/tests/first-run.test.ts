@@ -5,7 +5,6 @@ import { describe, expect, it, vi } from "vitest";
 import {
   firstRunMessage,
   describeMissingTools,
-  firstRunDecision,
   TOOL_REQUIREMENTS,
   type ToolRequirement,
 } from "../src/extension.js";
@@ -108,33 +107,15 @@ describe("first-run toolchain preflight", () => {
     }
   });
 
-  it("keeps reminding while a required tool is still missing", () => {
-    // The original bug: a "seen it" flag was written to globalState but never
-    // read to suppress anything, so it was ceremony — and its comment claimed
-    // it stopped nagging a returning user, which it did not. Before that, the
-    // flag was written unconditionally and a user who dismissed the notice
-    // never heard about the tool again, not even after installing half of it.
-    // Nudging while the problem persists is the correct behaviour, so there is
-    // deliberately no stored state: the answer depends only on the blockers.
-    const blocker: ToolRequirement = {
-      name: "ninja", needed: "ビルド", install: "apt install ninja-build", required: true,
-    };
-    expect(firstRunDecision([blocker])).toBe(true);
-    expect(firstRunDecision([])).toBe(false);
-    // Same answer on the tenth launch as on the first — that is the point.
-    expect(firstRunDecision([blocker])).toBe(true);
-  });
-
-  it("ignores an optional tool, which is not worth a notice", () => {
+  it("does not let an optional tool become a notice", () => {
     // ccache is missing on plenty of machines and the build still works.
-    // Notifying about it trains people to dismiss the notice.
+    // Notifying about it trains people to dismiss the notice. activate() acts
+    // on `missing.filter(required)`, so the filtering has to happen here.
     const opt: ToolRequirement = {
       name: "ccache", needed: "キャッシュ", install: "apt install ccache", required: false,
     };
-    // The decision is fed BLOCKERS, so an optional-only list reads as clear.
-    expect(firstRunDecision([])).toBe(false);
-    // ...and describeMissingTools is what does the filtering.
     expect(describeMissingTools([opt], () => false).summary).toContain("環境 OK");
+    expect(describeMissingTools([opt], () => false).missing.filter((m) => m.required)).toHaveLength(0);
   });
 
   it("keeps the user-facing text one line, because a toast collapses newlines", () => {
