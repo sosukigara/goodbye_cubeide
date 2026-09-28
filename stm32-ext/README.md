@@ -154,7 +154,7 @@ webview の HTML は起動時に 1 度だけ設定され、以降はメッセー
 | `stm32ext.interface` | `SWD` / `JTAG` | `SWD` | デバッグインターフェース（CubeProgrammer 経路の `port=` になる） |
 | `stm32ext.resetMode` | `connect-under-reset` / `software-reset` / `hardware-reset` / `core-reset` / `none` | `connect-under-reset` | リセット戦略。pyOCD では `connect-under-reset` → `--connect under-reset`、`none` → `--no-reset` |
 | `stm32ext.pollHz` | number, 1–200 | `100` | Live のポーリング周波数 |
-| `stm32ext.uiFontPx` | number, 12–20 | `15` | サイドバーの基本文字サイズ(px)。操作ボタンのタップ領域と値列/操作列の幅はこれに追従します。大きくすると変数名の列が短くなり、末尾が `…` になります（ホバーで完全なパスが出ます）。20px では名前列が約 5 文字しか入らないので、**実際に使うなら 16px くらいまで**が実用的な上限です。変更後は `Developer: Reload Window`（または再起動）が必要です |
+| `stm32ext.uiFontPx` | number, 12–20 | `15` | サイドバーの基本文字サイズ(px)。操作ボタンのタップ領域と値列/操作列の幅はこれに追従します。上限の 20px は「列が崩れない」ための値です。大きくすると変数名の列が短くなり末尾が `…` になります — 20px では名前列が約 5 文字しか入らないため、**実際に読みやすいのは 16px 前後**です（ホバーで完全なパスは出ます）。変更後は `Developer: Reload Window`（または再起動）が必要です |
 
 `probe` / `interface` / `resetMode` / `pollHz` は上の表の既定値でそのまま動きます。ホストは設定値が**空のときだけ**操作を止め、空になるのは利用者が明示的に `""` にした場合だけです。`cliPath` も `flashTool=cubeprogr` のときしか必須になりません（pyOCD 経路はベンダーツールチェーン不要）。`uiFontPx` は既定値を持つ表示設定なので、この必須設定の検査には含まれません。
 
