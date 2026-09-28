@@ -130,3 +130,14 @@ Live と型解決は Python サイドカーで、GDB ではありません。
 
 - ST-LINK は排他リソースです。別のセッションや CubeIDE が掴んでいる場合は modal で検知して書き込み・監視を開始しません。衝突の解消先は「トラブルシューティング」の表にあります。
 - 監視セッションの CSV とグラフの CSV は同じ 4 列スキーマ（`timestamp,address,name,value`）で、`value` は生の hex（桁数 = メンバ幅）です。型解釈は表示側で行うので、CSV は機械解析できます。
+
+## ライセンス
+
+MIT License（`LICENSE` を参照）。Copyright (c) 2026 so sukigara。
+
+本リポジトリは STM32CubeIDE / STM32CubeMX / STM32CubeProgrammer の
+実行ファイル・ライブラリ・ソース・生成物を**一切同梱していません**。
+ST の各ツールは、利用者が自身の PC にインストール済みの実行ファイルを
+`subprocess` で呼ぶだけで、再配布していません。`.ioc` / `.cproject` は利用者の
+プロジェクト設定として**読むだけ**で、コード生成は再実装していません。
+`STM32` は STMicroelectronics の商標であり、本プロジェクトはその製品ではありません。
