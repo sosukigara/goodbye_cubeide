@@ -26,8 +26,6 @@ export const SIDEBAR_SECTIONS: readonly SidebarSection[] = [
   { id: "log", title: "ログ" },
 ];
 
-/** Leaves added by one bulk click. `periph` alone is 185 leaves = 18,500 rows/s at 100Hz. */
-export const SIDEBAR_BULK_ADD_CAP = 32;
 /** Log lines retained in the webview before the oldest are dropped. */
 export const SIDEBAR_LOG_MAX_LINES = 2000;
 
@@ -195,16 +193,16 @@ export function renderSidebar(state: SidebarState = SIDEBAR_PANEL_DEFAULT_STATE)
 export const SIDEBAR_CSS = `<style>`
   // NB: keep this above renderSidebar so the <style> block is a plain
   // constant — a stray `</script>` anywhere would truncate the page.
-  // max(), not a literal: the user's editor font-size setting still wins when
-  // it is larger, but a small default can no longer shrink the controls and
-  // labels below the size where the op glyphs stop being clickable.
-  + `body{font-family:var(--vscode-font-family,sans-serif);font-size:max(var(--vscode-font-size,13px),14px);color:var(--vscode-foreground,#ccc);margin:0;padding:0 8px 24px;line-height:1.45}`
+  // max(), not a literal: a larger editor font-size still wins, but a small
+  // one can no longer shrink the controls below a comfortable reading and
+  // clicking size in a 300px column.
+  + `body{font-family:var(--vscode-font-family,sans-serif);font-size:max(var(--vscode-font-size,13px),15px);color:var(--vscode-foreground,#ccc);margin:0;padding:0 8px 24px;line-height:1.5}`
   + `section{border-top:1px solid var(--vscode-panel-border,rgba(128,128,128,.3));padding:8px 0 10px}`
   + `section:first-child{border-top:none}`
   + `h2{font-size:.92em;font-weight:600;margin:0 0 6px;letter-spacing:.02em}`
-  // Tap targets: ~26px tall. The op glyphs are the only way to add or remove
-  // a variable, so they have to be reliably hittable, not merely present.
-  + `button{font:inherit;margin:0 4px 4px 0;padding:4px 11px;min-height:26px;border-radius:2px;border:1px solid transparent;background:var(--vscode-button-secondaryBackground,#3a3d41);color:var(--vscode-button-secondaryForeground,#ccc);cursor:pointer}`
+  // Tap targets: 28px for section buttons, 24px in the dense table. The op
+  // glyphs are the only way to add or remove a variable.
+  + `button{font:inherit;margin:0 4px 4px 0;padding:5px 12px;min-height:28px;border-radius:2px;border:1px solid transparent;background:var(--vscode-button-secondaryBackground,#3a3d41);color:var(--vscode-button-secondaryForeground,#ccc);cursor:pointer}`
   + `button:disabled{opacity:.45;cursor:default}`
   + `button.primary{background:var(--vscode-button-background,#0e639c);color:var(--vscode-button-foreground,#fff)}`
   + `button.row{display:block;width:100%;text-align:left;background:transparent;border:none;padding:2px 0}`
@@ -236,16 +234,18 @@ export const SIDEBAR_CSS = `<style>`
   // name column stayed at 100px in a 300px sidebar and clipped
   // "loop_period_us". They are declared on both so neither reads as a bug.
   + `table.live th:nth-child(1){width:auto}`
-  // 86px, matching td.v below. With table-layout:fixed the <thead> widths win,
-  // so leaving this at 80px silently discarded the td.v change and ellipsised
-  // `0xbf800000` — a clipped hex value reads as a different (wrong) number.
-  + `table.live th:nth-child(2){width:86px}`
-  // 84px, not 52: a leaf row carries three buttons (追加 / 変更 / 除外) at 22px
+  // 98px, matching td.v below, and sized for the 15px base: a monospace hex
+  // value like `0xbf800000` is 10 characters at ~9px, which does not fit in
+  // 86px. A clipped hex value reads as a different (wrong) number, so this
+  // column is sized to the widest value we can print, not to a round guess.
+  // With table-layout:fixed the <thead> widths win, so both must agree.
+  + `table.live th:nth-child(2){width:98px}`
+  // 94px, not 52: a leaf row carries three buttons (追加 / 変更 / 除外) at 24px
   // each. At 52px `table-layout:fixed` + `overflow:hidden` clipped the
   // rightmost one — 除外, the control the whole row exists for — so it was
   // not clickable. The name column is `auto`, so it absorbs the difference
   // and ellipsises instead.
-  + `table.live th:nth-child(3){width:84px}`
+  + `table.live th:nth-child(3){width:94px}`
   + `table.live th,table.live td{box-sizing:border-box}`
   + `table.live td{padding:2px 4px;border-bottom:1px solid var(--vscode-panel-border,rgba(128,128,128,.2));overflow:hidden}`
   // A group row is a catalogue node, not a watched value: collapsing or emptying
@@ -261,19 +261,19 @@ export const SIDEBAR_CSS = `<style>`
   // text-overflow matters on the VALUE cell, not just the name: in hex view
   // `0xbf800000` fills the column, and a value clipped without an ellipsis
   // reads as a different (wrong) number.
-  + `td.v{width:86px;font-family:var(--vscode-editor-font-family,monospace);font-size:1em;font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}`
-  // The op glyphs ARE the add/remove controls: 22px square, centred, rather
-  // than a 0.9em sliver squeezed against a fixed cell edge.
-  // border-box is load-bearing: without it `width:22px` is the CONTENT box, so
-  // each button is 24px with its border, 3 of them plus margins and the cell's
-  // own padding need ~86px, and the 84px column clipped 除外 again.
-  + `table.live td.o button{box-sizing:border-box;padding:0;margin:0 2px 0 0;width:22px;height:22px;min-height:22px;line-height:1;font-size:1em;display:inline-flex;align-items:center;justify-content:center}`
+  + `td.v{width:98px;font-family:var(--vscode-editor-font-family,monospace);font-size:1em;font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}`
+  // The op glyphs ARE the add/remove controls: 24px square, centred, rather
+  // than a sliver squeezed against a fixed cell edge. border-box is
+  // load-bearing: without it `width:24px` is the CONTENT box, so three of
+  // them plus margins overflow the column and the rightmost one — 除外 — gets
+  // clipped and stops being clickable.
+  + `table.live td.o button{box-sizing:border-box;padding:0;margin:0 3px 0 0;width:24px;height:24px;min-height:24px;line-height:1;font-size:1em;display:inline-flex;align-items:center;justify-content:center}`
   + `td.v[data-fmt]{cursor:pointer}`
   + `td.v[data-fmt]:hover{background:rgba(128,128,128,.18)}`
   // overflow:visible so a future font-size or padding bump can never silently
   // make the rightmost control unclickable again — the failure mode that made
   // 削除 look broken while every test stayed green.
-  + `td.o{width:84px;text-align:right;white-space:nowrap;overflow:visible}`
+  + `td.o{width:94px;text-align:right;white-space:nowrap;overflow:visible}`
   + `input{background:var(--vscode-input-background,#3c3c3c);color:var(--vscode-input-foreground,#ccc);border:1px solid var(--vscode-input-border,rgba(128,128,128,.35));border-radius:2px;padding:5px 7px;font:inherit;box-sizing:border-box;width:100%;margin:2px 0}`
   + `a.btn{display:inline-block;margin:0 4px 4px 0;padding:3px 10px;border-radius:2px;background:var(--vscode-button-secondaryBackground,#3a3d41);color:var(--vscode-button-secondaryForeground,#ccc);text-decoration:none}`
   + `ul.series{list-style:none;margin:4px 0 0;padding:0}`
@@ -295,7 +295,6 @@ export const SIDEBAR_SCRIPT: string = [
   "const el = (id) => q('[data-testid=\"' + id + '\"]');",
   "const qa = (s) => Array.prototype.slice.call(document.querySelectorAll(s));",
   "const setText = (node, t) => { if (node && node.textContent !== t) node.textContent = t; };",
-  "const BULK_CAP = " + SIDEBAR_BULK_ADD_CAP + ";",
   "const LOG_MAX = " + SIDEBAR_LOG_MAX_LINES + ";",
   "",
   "// ------------------------------------------------------------------ decode",
@@ -551,21 +550,20 @@ export const SIDEBAR_SCRIPT: string = [
   "  if (head) head.setAttribute('aria-expanded', on ? 'false' : 'true');",
   "};",
   "",
-  "// D4: a bulk add is capped and says so. periph is 185 leaves; truncating it",
-  "// silently would leave a watchlist that looks complete and quietly is not.",
-  "const bulkAdd = (path, label) => {",
-  "  const rec = nodes.get(path);",
-  "  const all = rec ? rec.leaves : [];",
-  "  if (all.length === 0) { note(label + ': 追加できる葉がありません'); return; }",
-  "  const take = all.slice(0, BULK_CAP);",
-  "  vscode.postMessage({ kind: 'live-add', names: take });",
-  "  if (all.length > take.length) {",
-  "    note(label + ': ' + take.length + ' 件追加（上限 ' + BULK_CAP + '）。先頭未追加: '",
-  "      + all[take.length] + '（残り ' + (all.length - take.length) + ' 件）');",
-  "  } else {",
-  "    note(label + ': ' + take.length + ' 件追加');",
-  "  }",
-  "};",
+  // D4: a bulk add reports its count. It used to stop at 32 leaves; the host
+  // polls the whole watchlist now, so slicing here only produced a watchlist
+  // that looked complete and quietly was not.
+"const bulkAdd = (path, label) => {",
+"  const rec = nodes.get(path);",
+"  const all = rec ? rec.leaves : [];",
+"  if (all.length === 0) { note(label + ': 追加できる葉がありません'); return; }",
+// No cap. This used to stop at 32 leaves and say so in the note, but a
+// variable the user added and can see in the tree must also be watched: the
+// host already polls the whole watchlist, so a slice here only produced a
+// watchlist that looked complete and quietly was not.
+"  vscode.postMessage({ kind: 'live-add', names: all });",
+"  note(label + ': ' + all.length + ' 件追加');",
+"};",
   "",
   "const dropUnder = (prefix) => {",
   "  const gone = [];",

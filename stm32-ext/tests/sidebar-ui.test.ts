@@ -826,38 +826,39 @@ describe("sidebar: difference-based rendering", () => {
   });
 });
 
-describe("sidebar: bulk add cap (D4)", () => {
-  it("caps the add and states the count, the first skipped leaf and the remainder", () => {
+describe("sidebar: bulk add (D4)", () => {
+  it("adds every leaf of a group, with no cap", () => {
+    // It used to stop at 32 and report the rest as 未追加. The host polls the
+    // whole watchlist now, so slicing here only produced a watchlist that
+    // looked complete and quietly was not: the user added the group, and 153
+    // of its leaves were never watched.
     const b = withTree(boot(), bigTree("periph", 185));
     const add = b.$('[data-name="periph"] [data-op="add"]');
     add?.dispatchEvent({ type: "click", target: add });
-    const msg = b.posted.filter((m) => m.kind === "live-add").at(-1);
-    const names = msg?.names as string[];
-    expect(names).toHaveLength(SIDEBAR_BULK_ADD_CAP);
+    const names = b.posted.filter((m) => m.kind === "live-add").at(-1)?.names as string[];
+    expect(names).toHaveLength(185);
     expect(names[0]).toBe("periph.leaf0");
-    expect(names.at(-1)).toBe(`periph.leaf${SIDEBAR_BULK_ADD_CAP - 1}`);
+    expect(names.at(-1)).toBe("periph.leaf184");
     const note = b.$('[data-testid="live-add-note"]')?.textContent ?? "";
-    expect(note).toContain("32 件追加");
-    expect(note).toContain("上限 32");
-    expect(note).toContain("先頭未追加: periph.leaf32");
-    expect(note).toContain("残り 153 件");
+    expect(note).toBe("periph : Periph: 185 件追加");
+    expect(note).not.toContain("上限");
+    expect(note).not.toContain("未追加");
   });
 
-  it("says how many were added when nothing was truncated", () => {
+  it("says how many were added", () => {
     const b = withTree(boot(), bigTree("periph", 5));
     const add = b.$('[data-name="periph"] [data-op="add"]');
     add?.dispatchEvent({ type: "click", target: add });
     const note = b.$('[data-testid="live-add-note"]')?.textContent ?? "";
     expect(note).toBe("periph : Periph: 5 件追加");
-    expect(note).not.toContain("上限");
   });
 
-  it("adding the root subtree is capped too, never unbounded", () => {
+  it("adding the root subtree adds every leaf too", () => {
     const b = withTree(boot(), bigTree("periph", 185));
     const add = b.$('[data-name="DebugGlobal"] [data-op="add"]');
     add?.dispatchEvent({ type: "click", target: add });
     const names = b.posted.filter((m) => m.kind === "live-add").at(-1)?.names as string[];
-    expect(names).toHaveLength(SIDEBAR_BULK_ADD_CAP);
+    expect(names).toHaveLength(185);
   });
 });
 
