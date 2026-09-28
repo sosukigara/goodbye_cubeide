@@ -80,11 +80,14 @@ def word_span(address, size):
 def parse_request(raw, base, size_of_symbol):
     """Validate one request object. Raises WriteRequestError on refusal.
 
-    `base`/`size_of_symbol` are the extent the HOST resolved for the target,
-    and the request has to fit inside them. Re-checking the host's own claim
-    here is the point: the sidecar is a separate process, so this catches a
-    request that does not correspond to the symbol the host said it was
-    writing — which is what a buggy or hostile host would send.
+    `base`/`size_of_symbol` are the extent the host resolved for the target,
+    and the request has to fit inside them. Be clear about what this does and
+    does not buy: the values arrive in the same request, so this is a
+    consistency check, not an independent authority. What it does catch is a
+    request whose address and width contradict the symbol it claims — the
+    shape a host bug or a corrupted line takes. It cannot catch a host that
+    resolved the wrong symbol in the first place; that is the host's job, and
+    the modal confirmation in front of it is the user's.
 
     There is no longer a check that the read-modify-write's 32-bit words stay
     inside the fence, and that is deliberate. With a fence one symbol wide,

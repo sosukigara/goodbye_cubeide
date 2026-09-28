@@ -1445,8 +1445,8 @@ export class LivePanelProvider {
     }
     // Transport write goes through the pyOCD sidecar, which owns the single
     // probe session: the request goes down the child's stdin and the answer
-    // comes back on stdout. The sidecar re-checks the range before the bus is
-    // touched, and reads the word back to confirm.
+    // comes back on stdout. The sidecar re-checks the write against the
+    // extent this request declares, then reads the value back to confirm.
     this.channel.appendLine(finalVerdict.audit);
     const result = await this.sendWrite(sym.address, sym.size, bits);
     if (result.ok) {

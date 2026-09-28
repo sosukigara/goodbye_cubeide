@@ -1,5 +1,5 @@
 // todo5 tests: ELF resolution wrapper, poller (CSV/tear-guard/drop-rate),
-// DebugGlobal allowlist writes, live + graph panels. Still 6 panels total.
+// allowlisted writes, live + graph panels. Still 6 panels total.
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";

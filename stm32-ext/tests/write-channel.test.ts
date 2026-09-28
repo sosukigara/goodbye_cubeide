@@ -47,10 +47,10 @@ describe("write result parsing", () => {
   });
   it("reads a refusal reason", () => {
     const line = WRITE_RESULT_PREFIX + JSON.stringify({
-      id: "w1", ok: false, error: "address 0x30000000 outside DebugGlobal",
+      id: "w1", ok: false, error: "address 0x30000000+4 does not fit the declared symbol",
     });
     expect(parseWriteResult(line)).toMatchObject({ ok: false });
-    expect(parseWriteResult(line)?.error).toMatch(/outside DebugGlobal/);
+    expect(parseWriteResult(line)?.error).toMatch(/does not fit the declared symbol/);
   });
   it("ignores ordinary poll output", () => {
     expect(parseWriteResult("live_poll: 50 symbols @ 10Hz, no-halt")).toBeNull();

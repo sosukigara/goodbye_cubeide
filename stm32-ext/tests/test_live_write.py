@@ -1,4 +1,4 @@
-"""pytest: DebugGlobal-only write channel (sidecar side, no hardware).
+"""pytest: the memory write channel (sidecar side, no hardware).
 
 Run with: PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest tests/test_live_write.py -q
 
