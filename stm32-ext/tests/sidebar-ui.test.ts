@@ -14,7 +14,7 @@ import {
 
 describe("sidebar: font size is a user setting, and the columns follow it", () => {
   it("injects the configured size as a CSS variable", () => {
-    expect(renderSidebar(undefined as never, 18)).toContain("--stm32ext-ui-font:18px");
+    expect(renderSidebar(undefined as never, 16)).toContain("--stm32ext-ui-font:16px");
     expect(renderSidebar(undefined as never, 12)).toContain("--stm32ext-ui-font:12px");
   });
 
@@ -23,7 +23,7 @@ describe("sidebar: font size is a user setting, and the columns follow it", () =
     // silently invalidates every width derived from it. Out-of-range numbers
     // clamp to the bounds; a non-finite one falls back to the default.
     expect(renderSidebar(undefined as never, 0)).toContain("--stm32ext-ui-font:12px");
-    expect(renderSidebar(undefined as never, 999)).toContain("--stm32ext-ui-font:20px");
+    expect(renderSidebar(undefined as never, 999)).toContain("--stm32ext-ui-font:16px");
     expect(renderSidebar(undefined as never, Number.NaN)).toContain("--stm32ext-ui-font:15px");
     for (const bad of [0, 999, Number.NaN, Number.POSITIVE_INFINITY]) {
       expect(renderSidebar(undefined as never, bad)).not.toContain("NaN");
@@ -60,25 +60,26 @@ describe("sidebar: font size is a user setting, and the columns follow it", () =
     expect(body?.[1]).not.toContain("vscode-font-size");
   });
 
-  it("caps at 20px, and the cap is the same number in the schema", () => {
+  it("caps at 16px, and the cap is the same number in the schema", () => {
     // The name column is whatever the two fixed columns leave over, and both
     // grow with the font: name = 284 - 11.2*font at a 300px sidebar. Measured
-    // in a real browser that is 13 monospace characters at the 15px default
-    // and only 5 at 20px — so the cap is a guard rail against a setting that
-    // leaves variable names unreadable, NOT a size that is pleasant to use.
-    // Raising it means re-measuring that, and the schema and the clamp must
+    // in a real browser that is 13 monospace characters at the 15px default,
+    // 11 at 16px, 8 at 18px and only 5 at 20px, where a 27-character name
+    // reduces to "req…". The cap sits where a typical name still shows its
+    // meaningful part, not merely where the layout holds together. Raising it
+    // means re-running that measurement, and the schema and the clamp must
     // not drift apart while doing so.
-    const css = renderSidebar(SIDEBAR_PANEL_DEFAULT_STATE, 20);
-    expect(css).toContain("--stm32ext-ui-font:20px");
+    const css = renderSidebar(SIDEBAR_PANEL_DEFAULT_STATE, 16);
+    expect(css).toContain("--stm32ext-ui-font:16px");
     // Anything larger is pulled back to the same bound.
-    expect(renderSidebar(SIDEBAR_PANEL_DEFAULT_STATE, 22)).toContain("--stm32ext-ui-font:20px");
+    expect(renderSidebar(SIDEBAR_PANEL_DEFAULT_STATE, 20)).toContain("--stm32ext-ui-font:16px");
     // ...and the Settings UI offers the same range the code enforces.
     const pkg = JSON.parse(
       readFileSync(new URL("../package.json", import.meta.url), "utf8"),
     );
     const schema = pkg.contributes.configuration.properties["stm32ext.uiFontPx"];
     expect(schema.minimum).toBe(12);
-    expect(schema.maximum).toBe(20);
+    expect(schema.maximum).toBe(16);
   });
 });
 
