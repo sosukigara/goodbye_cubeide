@@ -6,6 +6,8 @@ import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { delimiter, extname, join, resolve } from "node:path";
 
+import { venvExtraDirs } from "../env/venv";
+
 export type DiagnosticKind = "error" | "warning" | "note";
 
 export interface GccDiagnostic {
@@ -208,6 +210,12 @@ export function describeBuildFailure(result: {
 /** Directories a desktop session commonly omits from PATH. */
 const EXTRA_TOOL_DIRS = [join(homedir(), ".local", "bin")] as const;
 
+// The setup venv's bin directory is searched too, so a `ninja` installed by
+// first-run setup is found by the same resolveTool call the build uses. It is
+// read per call rather than captured at module load, because setup finishes
+// after this module has already been evaluated.
+const venvToolDirs = (): readonly string[] => venvExtraDirs();
+
 export interface ToolResolution {
   readonly path: string;
   readonly found: boolean;
@@ -245,6 +253,9 @@ export function resolveTool(
   const dirs = [
     ...(env["PATH"] ?? "").split(delimiter),
     ...extraDirs,
+    // Only when the caller did not pass its own list, so a test that injects
+    // directories still sees exactly the directories it asked for.
+    ...(extraDirs === EXTRA_TOOL_DIRS ? venvToolDirs() : []),
   ];
   // A name that already carries an extension is not given another one.
   const candidates = extname(name) === ""

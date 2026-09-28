@@ -36,6 +36,13 @@ import {
   type ElfResolution,
 } from "./live/elfResolver";
 import {
+  ensureVenv,
+  installPackages,
+  planSetup,
+  setVenvDir,
+  sidecarPythonNow,
+} from "./env/venv";
+import {
   assertCsvHeader,
   decodeValue,
   dropStats,
@@ -835,7 +842,7 @@ export class LivePanelProvider {
     await this.stop();
     // Fresh spawn clears the intentional-stop flag (see startSession).
     this.stopped = false;
-    const child = spawn("python3", args, { cwd: dirname(this.csvPath) || "." });
+    const child = spawn(sidecarPythonNow(), args, { cwd: dirname(this.csvPath) || "." });
     this.child = child;
     this.childPid = child.pid;
     let errTail = "";
@@ -2042,7 +2049,7 @@ async function reresolveLive(
     const res = await resolveElf(
       elfPath,
       (elf: string, extra: readonly string[] = []) =>
-        spawnCli("python3", [join(scriptsDir, "elf_resolve.py"), elf, ...extra, "--json"]),
+        spawnCli(sidecarPythonNow(), [join(scriptsDir, "elf_resolve.py"), elf, ...extra, "--json"]),
       ["--all-members"],
     );
     live.setResolution(res, mcu);
@@ -2606,6 +2613,79 @@ export function activate(context: vscode.ExtensionContext): void {
   if (blockers.length > 0) {
     void vscode.window.showWarningMessage(
       firstRunMessage(blockers),
+      "診断する",
+      "導入手順を開く",
+    ).then((choice) => {
+      if (choice === "診断する") {
+        void vscode.commands.executeCommand("stm32ext.diagnose");
+      } else if (choice === "導入手順を開く") {
+        void vscode.commands.executeCommand(
+          "vscode.open",
+          vscode.Uri.file(join(context.extensionPath, QUICKSTART_RELATIVE_PATH)),
+        );
+      }
+    });
+  }
+
+  // Auto-setup: installing the VSIX is supposed to be enough, so anything a
+  // wheel can provide is fetched here rather than left as a README step. It
+  // only runs when something is actually missing, and `stm32ext.autoSetup`
+  // turns it off for anyone who would rather install by hand.
+  const missingNames = tools.missing.map((m) => m.name);
+  if (missingNames.length > 0 && vscode.workspace.getConfiguration("stm32ext").get<boolean>("autoSetup", true)) {
+    void runSetup(
+      channel,
+      join(context.globalStorageUri.fsPath, "venv"),
+      missingNames,
+      (bin, args, timeoutMs) => spawnCli(bin, args, timeoutMs),
+      context,
+    );
+  }
+}
+
+/**
+ * First-run environment setup: build the private venv and install the wheels.
+ *
+ * Runs detached from activation — a pip install of pyocd pulls in a
+ * multi-megabyte dependency tree and must never stand between the user and
+ * the sidebar. Everything it does is written to the output channel, because a
+ * background process that downloads and installs things without saying so is
+ * exactly the behaviour people rightly object to.
+ *
+ * It only installs what a wheel can honestly provide. `arm-none-eabi-gcc` and
+ * `python3` cannot be provisioned this way and are reported as manual, so the
+ * user is never told a toolchain is complete when it is not.
+ */
+async function runSetup(
+  channel: vscode.OutputChannel,
+  venvDir: string,
+  missingTools: readonly string[],
+  run: (bin: string, args: string[], timeoutMs: number) => Promise<{ exitCode: number; stdout: string; stderr: string }>,
+  context: vscode.ExtensionContext,
+): Promise<void> {
+  const plan = planSetup(missingTools);
+  channel.appendLine(`[setup] 不足ツール: ${missingTools.join(", ") || "(なし)"}`);
+  if (plan.packages.length > 0) {
+    channel.appendLine(`[setup] venv を作成して導入します: ${plan.packages.join(", ")}`);
+    const { python, result } = await ensureVenv(venvDir, "python3", run);
+    channel.appendLine(`[setup] ${python === undefined ? "NG" : "OK"} ${result.detail}`);
+    if (python !== undefined) {
+      const installed = await installPackages(python, plan.packages, run);
+      channel.appendLine(`[setup] ${installed.ok ? "OK" : "NG"} ${installed.detail}`);
+    }
+  }
+  for (const tool of plan.manual) {
+    channel.appendLine(`[setup] 自動導入対象外 (要手動): ${tool}`);
+  }
+  setVenvDir(venvDir);
+  // Re-resolve after installing: a ninja that setup just placed in the venv is
+  // only findable because resolveTool now searches the venv's bin directory.
+  const still = describeMissingTools(TOOL_REQUIREMENTS, (n) => resolveTool(n).found);
+  const left = still.missing.filter((m) => m.required);
+  if (left.length > 0) {
+    channel.appendLine(`[setup] 自動導入後も不足: ${left.map((m) => m.name).join(", ")}`);
+    void vscode.window.showWarningMessage(
+      firstRunMessage(left),
       "診断する",
       "導入手順を開く",
     ).then((choice) => {

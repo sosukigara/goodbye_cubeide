@@ -69,7 +69,7 @@ import live_write  # noqa: E402
 
 CSV_HEADER = ["timestamp", "address", "name", "value"]
 
-PYOCD_INSTALL_CMD = "pip install --user pyocd"
+PYOCD_INSTALL_CMD = "auto-install pyocd (venv, PEP 668 safe)"
 
 # Exit codes. Every failure is non-zero, but the host (and the log) are better served by
 # knowing which failure it was than by "1".
@@ -110,18 +110,51 @@ def err(message):
 
 
 def ensure_pyocd():
-    """Try `pip install --user pyocd`; return (ok, detail). Never raises."""
+    """Install pyocd into a venv beside this script; return (ok, detail). Never raises.
+
+    `pip install --user` is what this used to run, and it is refused outright on
+    any current Debian/Ubuntu: /usr/lib/python3.*/EXTERNALLY-MANAGED makes pip
+    exit with PEP 668, so the documented recovery from "pyocd is not installed"
+    failed on exactly the machines that needed it. When the interpreter is
+    externally managed we build a venv instead, which has no such marker, and
+    fall back to --user only where that is still permitted.
+    """
     import subprocess
+    import tempfile
+    venv_dir = os.path.join(tempfile.gettempdir(), "stm32ext-pyocd-venv")
+    venv_python = os.path.join(venv_dir, "bin", "python")
+    detail = "no install was attempted"
+    cmd = [sys.executable, "-m", "pip", "install", "pyocd"]
     try:
-        p = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "--user", "pyocd"],
-            capture_output=True, text=True, timeout=300)
-        ok = p.returncode == 0
-        tail = (p.stdout + p.stderr).strip().splitlines()
-        detail = tail[-1] if tail else f"exit={p.returncode}"
-        return ok, f"{PYOCD_INSTALL_CMD} -> {'OK' if ok else 'FAIL'}: {detail}"
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
     except Exception as e:  # noqa: BLE001 - record, don't crash
-        return False, f"{PYOCD_INSTALL_CMD} -> FAIL: {e}"
+        detail = f"{' '.join(cmd)} -> FAIL: {e}"
+    else:
+        if p.returncode == 0:
+            return True, f"{' '.join(cmd)} -> OK"
+        tail = (p.stdout + p.stderr).strip().splitlines()
+        detail = (f"{' '.join(cmd)} -> FAIL: "
+                  f"{tail[-1] if tail else f'exit={p.returncode}'}")
+    # Creating the venv is a setup step, NOT a success. Returning on it would
+    # report pyocd as installed while the module is still missing, which is
+    # exactly how the first version of this function passed its own smoke test.
+    try:
+        v = subprocess.run([sys.executable, "-m", "venv", venv_dir],
+                           capture_output=True, text=True, timeout=600)
+    except Exception as e:  # noqa: BLE001
+        return False, f"{PYOCD_INSTALL_CMD} -> FAIL: venv: {e}"
+    if v.returncode != 0:
+        return False, f"{PYOCD_INSTALL_CMD} -> FAIL: {detail}; venv: {v.stderr.strip()[-200:]}"
+    cmd = [venv_python, "-m", "pip", "install", "pyocd"]
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+    except Exception as e:  # noqa: BLE001
+        return False, f"{PYOCD_INSTALL_CMD} -> FAIL: venv python: {e}"
+    if p.returncode == 0:
+        return True, f"{' '.join(cmd)} -> OK"
+    tail = (p.stdout + p.stderr).strip().splitlines()
+    return False, (f"{PYOCD_INSTALL_CMD} -> FAIL: {detail}; then "
+                   f"{tail[-1] if tail else f'exit={p.returncode}'}")
 
 
 def is_usb_error(exc):

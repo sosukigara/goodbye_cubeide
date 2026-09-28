@@ -46,6 +46,30 @@ pip install --user pyocd pyelftools
 
 `pyocd` が無くても **ビルドと型解析は動きます**。「何もできない」状況を作らないためです。表の `△` は「その機能だけ使えない」を意味します。
 
+### 環境構築は自動でできる（できる範囲だけ）
+
+拡張を入れて起動した結果、ツールが足りていれば **自動で導入します**。`npm` や `sudo` を叩くのではなく、拡張のストレージ内に**専用の venv** を作って、そこへ pip で入れます。
+
+自動で入るもの:
+
+| ツール | 導入方法 |
+|---|---|
+| `ninja` | PyPI の `ninja`（実バイナリ同梱）— `apt install ninja-build` が不要になる |
+| `pyocd` | 書き込みと Live 監視 |
+| `pyelftools` | DWARF の型解決。無いと `0x… 型不明` になる |
+
+**自動で入らないもの**（理由も明記します）:
+
+| ツール | 理由 |
+|---|---|
+| `arm-none-eabi-gcc` | クロスツールチェーンで数百 MB、root が必要です |
+| `python3` | venv を作る側自体が python3 自身です（鶏と卵） |
+| `ccache` | 信頼できる wheel がなく、省略しても動くため任意です |
+
+なぜ `--user` ではなく venv なのか: 現行の Debian/Ubuntu は `/usr/lib/python3.*/EXTERNALLY-MANAGED` により `pip install --user` を **PEP 668 で拒否**します。つまり `pip install --user pyocd` は、必要なマシンで必ず失敗します。venv の中にはこの拒否マークがないため、**システム Python を一切触らずに**導入できます。
+
+実行した結果はすべて出力チャネルの `[setup]` 行に残ります。導入したくない場合は `stm32ext.autoSetup` を `false` にすると、導入せずに不足の通知だけが出ます。設定の反映は `Developer: Reload Window`。
+
 前提として、ソースツリーに `.cproject` があることが必要です。Live 監視と型解決は Python サイドカーで、**GDB ではありません**（`arm-none-eabi-gdb` は要りません）。
 
 ### VSCode に読み込む
@@ -155,6 +179,7 @@ webview の HTML は起動時に 1 度だけ設定され、以降はメッセー
 | `stm32ext.resetMode` | `connect-under-reset` / `software-reset` / `hardware-reset` / `core-reset` / `none` | `connect-under-reset` | リセット戦略。pyOCD では `connect-under-reset` → `--connect under-reset`、`none` → `--no-reset` |
 | `stm32ext.pollHz` | number, 1–200 | `100` | Live のポーリング周波数 |
 | `stm32ext.uiFontPx` | number, 12–16 | `15` | サイドバーの基本文字サイズ(px)。操作ボタンのタップ領域と値列/操作列の幅はこれに追従します。上限の 16px は、300px のサイドバーで変数名の意味のある部分が読める限界です（実測で名前列は約 11 文字。20px では 5 文字しか入らず `req…` になります）。変更後は `Developer: Reload Window`（または再起動）が必要です |
+| `stm32ext.autoSetup` | boolean | `true` | 起動時に不足ツールを自動導入します。拡張ストレージ内に専用 venv を作り `ninja` / `pyocd` / `pyelftools` を pip で入れます。`arm-none-eabi-gcc` と `python3` は自動導入の対象外です。`false` にすると導入せず不足の通知だけが出ます |
 
 `probe` / `interface` / `resetMode` / `pollHz` は上の表の既定値でそのまま動きます。ホストは設定値が**空のときだけ**操作を止め、空になるのは利用者が明示的に `""` にした場合だけです。`cliPath` も `flashTool=cubeprogr` のときしか必須になりません（pyOCD 経路はベンダーツールチェーン不要）。`uiFontPx` は既定値を持つ表示設定なので、この必須設定の検査には含まれません。
 
@@ -182,7 +207,7 @@ webview の HTML は起動時に 1 度だけ設定され、以降はメッセー
 |---|---|---|
 | `プローブ使用中: 別のウィンドウ/プロセスが監視セッションで掴んでいます` | USB の `Resource busy`。ロックファイル `/tmp/stm32ext-live.lock` を別の監視セッションが保持している | 相手側の「停止」で解放するか、そのウィンドウを閉じる。停止時は子プロセスの終了を待ってから再接続する |
 | 起動時に `STM32CubeIDEが起動しています` の modal | CubeIDE のデバッグサーバが ST-LINK を掴んでいる | CubeIDE を完全終了してから再実行。CubeIDE 自身のプロセスは kill しません |
-| サイドカーが `pyocd is not installed` で終了（終了コード 3） | pyOCD 未導入。再試行では直りません | `pip install --user pyocd`、または `python3 scripts/live_poll.py --ensure-pyocd`。自動インストールはしません |
+| サイドカーが `pyocd is not installed` で終了（終了コード 3） | pyOCD 未導入。自動導入が失敗したか、`stm32ext.autoSetup` が無効 | 出力チャネルの `[setup]` 行に理由が出ます。`autoSetup` を `true` にして再起動してください。`pip install --user pyocd` は現行 Debian/Ubuntu では PEP 668 で拒否されます |
 | 接続時に USB タイムアウト（終了コード 5） | 初回接続の USB 応答なし。サイドカーは指数バックオフで USB エラーだけを再試行し、既定回数を使い切ると終了します | ケーブルの接触、USB 負荷、他のプローブ保持プロセス（CubeProgrammer / OpenOCD / GDB / 別の VSCode ウィンドウ）を確認。ST-LINK を挿し直し「再接続」。ST-LINK V2 (0483:3748) の udev ルールも確認 |
 | `監視できる変数がありません`（終了コード 6） | 解決 JSON に監視可能な葉がない | 「変数追加」から選ぶか、ビルドし直す。監視リストは workspaceState に残るため、意図しない表示なら「×」で消して再ビルド |
 | `ELF has no debug info (stripped or built without -g)`（`elf_resolve` の終了コード 2） | DWARF がない、または `--strip-debug` 済み | Debug 構成を `-g3` でビルドし直して `ninja -C build-ext`。生成される build.ninja は `-g3` を含みます |
