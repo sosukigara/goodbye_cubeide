@@ -2,6 +2,55 @@
 
 CubeIDE を使わずに、VSCode だけで STM32 ファームウェアを **ビルド → 書き込み → 変数監視 → グラフ** します。
 
+## クイックスタート（clone して動かす）
+
+```bash
+git clone https://github.com/sosukigara/goodbye_cubeide.git
+cd goodbye_cubeide/stm32-ext
+npm ci
+npm run verify     # typecheck → vitest → pytest → compile
+```
+
+`npm run verify` は clone 直後の状態で **TypeScript 321 件 + Python 97 件**が green になります。実機ファームウェアの ELF を要する 15 件は firmware 未ビルドなら skip されます（失敗ではなく、正しく skip としてカウントされます）。DWARF の fixture テストは自分の ELF をコンパイルするので、どんな環境でも必ず走ります。
+
+### 必要なもの
+
+拡張機能を **入れるだけ** なら Node.js 18+ と npm だけです。**実機で動かす** には下表のツールが要ります。足りないものは `STM32: 診断` がまとめて、**導入コマンド付き**で教えてくれます。初めて入れたときにも、必須ツールが足りていなければ通知します。
+
+| | 必須 | 用途 |
+|---|---|---|
+| Node.js 18+ / npm | ○ | 拡張機能のパッケージング |
+| `arm-none-eabi-gcc` | ○ | ファームウェアのコンパイル |
+| `ninja` | ○ | ビルドの実行 |
+| `python3` | ○ | Live 監視のサイドカー |
+| `pyocd` | ○ | 書き込みと Live 監視（`pip install --user pyocd`） |
+| `ccache` | △ | ビルドキャッシュ。無くても動きますが遅くなります |
+| ST-LINK | 実機のみ | 接続。机上で動かすだけなら不要です |
+
+導入例:
+
+```bash
+sudo apt install gcc-arm-none-eabi ninja-build python3 ccache
+pip install --user pyocd
+```
+
+`pyocd` が無くても **ビルドと型解析は動きます**。「何もできない」状況を作らないためです。
+
+### VSCode に読み込む
+
+```bash
+npm run package                                  # stm32-ext-<version>.vsix
+code --install-extension stm32-ext-*.vsix
+```
+
+表示したら `Developer: Reload Window`。
+
+**設定ファイルは触らなくて構いません。** `stm32ext.probe` / `interface` / `resetMode` / `pollHz` は既定値（ST-LINK / SWD / connect-under-reset / 100Hz）で動きます。ST-LINK 以外を使うときだけ設定してください。
+
+### 動かないとき
+
+コマンドパレットで **STM32: 診断**。ツールチェーン・設定・CubeIDE 競合をまとめて点検し、不足していれば導入コマンドを表示します。
+
 ## 画面構成
 
 **サイドバー 1 枚**（アクティビティバーの STM32 アイコン）に 6 セクションが縦に積まれています。パネルは 6 枚ではなく 1 枚です。

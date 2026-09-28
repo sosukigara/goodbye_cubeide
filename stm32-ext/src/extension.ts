@@ -16,7 +16,7 @@ import {
   renderNinja,
   resolveIncludes,
 } from "./build/ninjaGen";
-import { describeBuildFailure, runNinja, type BuildPanelState, type GccDiagnostic } from "./build/backend";
+import { describeBuildFailure, resolveTool, runNinja, type BuildPanelState, type GccDiagnostic } from "./build/backend";
 import { spawnCli } from "./flash/spawn";
 import { runPyocdFlash } from "./flash/pyocd";
 import {
@@ -2274,9 +2274,106 @@ async function writeGraphCsv(channel: vscode.OutputChannel, rows: readonly LiveS
   void vscode.window.showInformationMessage(`グラフ CSV を保存しました: ${uri.fsPath} (${rows.length} 行)`);
 }
 
-/** STM32: 診断 — CubeIDE競合・CLI解決・設定を点検して結果を表示します。 */
+/** globalState key marking that the first-run toolchain notice has been shown. */
+const FIRST_RUN_KEY = "stm32ext.toolchainNoticeShown";
+/** README anchor the "導入手順を開く" button jumps to. */
+const QUICKSTART_URI = "https://github.com/sosukigara/goodbye_cubeide/blob/main/stm32-ext/README.md#クイックスタート-clone-して動かす";
+
+/** One external program the extension needs, and how to get it if absent. */
+export interface ToolRequirement {
+  readonly name: string;
+  /** What breaks without it, in the user's terms. */
+  readonly needed: string;
+  /** Concrete install command for the common platforms, best-effort. */
+  readonly install: string;
+  /** False = a first-time user is blocked until they install it. */
+  readonly required: boolean;
+}
+
+/**
+ * The external tools this extension shells out to.
+ *
+ * Kept as data (not scattered spawn sites) so `STM32: 診断` can report them all
+ * at once. A user who cannot build used to meet the failure one command at a
+ * time: ninja missing, then ccache missing, then a cryptic "executable file
+ * not found" from the linker. One list, one message, one fix.
+ */
+export const TOOL_REQUIREMENTS: readonly ToolRequirement[] = [
+  {
+    name: "arm-none-eabi-gcc",
+    needed: "ファームウェアのコンパイル",
+    install: "apt install gcc-arm-none-eabi / brew install --cask gcc-arm-embedded",
+    required: true,
+  },
+  {
+    name: "ninja",
+    needed: "ビルドの実行",
+    install: "apt install ninja-build / brew install ninja / pip install ninja",
+    required: true,
+  },
+  {
+    name: "ccache",
+    needed: "ビルドキャッシュ（無くても動きますが遅くなります）",
+    install: "apt install ccache / brew install ccache",
+    required: false,
+  },
+  {
+    name: "pyocd",
+    needed: "書き込みと Live 監視",
+    install: "pip install --user pyocd",
+    required: true,
+  },
+  {
+    name: "python3",
+    needed: "Live 監視のサイドカー",
+    install: "apt install python3 / brew install python3",
+    required: true,
+  },
+];
+
+/**
+ * Which tools are missing, and the single line to tell the user about it.
+ * Pure over its `found` argument so the wording is testable without a PATH.
+ */
+export function describeMissingTools(
+  reqs: readonly ToolRequirement[],
+  found: (name: string) => boolean,
+): { missing: readonly ToolRequirement[]; summary: string; install: string } {
+  const missing = reqs.filter((r) => !found(r.name));
+  const blocking = missing.filter((r) => r.required);
+  if (blocking.length === 0) {
+    return {
+      missing,
+      summary: missing.length === 0
+        ? "環境 OK — 必要なツールはすべて揃っています"
+        : `環境 OK（任意ツール ${missing.length} 件は未導入: ${missing.map((m) => m.name).join(", ")}）`,
+      install: "",
+    };
+  }
+  // Every blocker gets its own install line: a single "install the toolchain"
+  // sentence is what a first-time user cannot act on.
+  const install = blocking
+    .map((r) => `  ${r.name} — ${r.needed}\n    ${r.install}`)
+    .join("\n");
+  return {
+    missing,
+    summary: `${blocking.length} 個の必須ツールが未導入: ${blocking.map((m) => m.name).join(", ")}`,
+    install,
+  };
+}
+
+/** STM32: 診断 — ツールチェーン・設定・競合をまとめて点検します。 */
 async function diagnose(channel: vscode.OutputChannel): Promise<void> {
   channel.appendLine("[diagnose] STM32 environment check");
+  const tools = describeMissingTools(TOOL_REQUIREMENTS, (n) => resolveTool(n).found);
+  channel.appendLine(`[diagnose] ${tools.summary}`);
+  for (const r of TOOL_REQUIREMENTS) {
+    channel.appendLine(`[diagnose]   ${resolveTool(r.name).found ? "OK  " : "MISS"} ${r.name} (${r.needed})`);
+  }
+  if (tools.install !== "") {
+    channel.appendLine("[diagnose] 導入方法:");
+    channel.appendLine(tools.install);
+  }
   const checked = readSettings();
   const settingsOk = checked.ok;
   channel.appendLine(settingsOk
@@ -2301,8 +2398,19 @@ async function diagnose(channel: vscode.OutputChannel): Promise<void> {
   channel.appendLine(conflict.cubeIde
     ? `[diagnose] CubeIDE: RUNNING (${conflict.details.join(", ")}) — 終了推奨`
     : "[diagnose] CubeIDE: not running (OK)");
-  const summary = `診断: 設定${settingsOk ? "OK" : "不足"} / CLI ${cli.found ? "検出" : "未検出"} / CubeIDE ${conflict.cubeIde ? "起動中⚠️" : "停止中"}`;
+  const summary = `診断: ツール ${tools.missing.filter((m) => m.required).length === 0 ? "OK" : "不足"} / 設定${settingsOk ? "OK" : "不足"} / CLI ${cli.found ? "検出" : "未検出"} / CubeIDE ${conflict.cubeIde ? "起動中⚠️" : "停止中"}`;
   channel.appendLine(`[diagnose] ${summary} (詳細はこの出力パネル)`);
+  // A first-time user needs the fix, not the verdict: put the install
+  // commands where they can be read without opening the output panel.
+  if (tools.install !== "") {
+    void vscode.window.showErrorMessage(`${summary}\n\n${tools.install}`, "設定を開く")
+      .then((choice) => {
+        if (choice === "設定を開く") {
+          void vscode.commands.executeCommand("workbench.action.openSettings", "stm32ext");
+        }
+      });
+    return;
+  }
   void vscode.window.showInformationMessage(summary);
 }
 
@@ -2456,6 +2564,28 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand("stm32ext.diagnose", () => diagnose(channel)),
   );
   channel.appendLine("STM32 extension active (sidebar).");
+
+  // First run: say what is missing BEFORE the user hits a build button and
+  // reads "executable file not found". Runs once per machine (not per
+  // window), so a returning user is not nagged, and never blocks activation —
+  // a missing ccache must not stop someone from building.
+  if (context.globalState.get(FIRST_RUN_KEY) !== true) {
+    void context.globalState.update(FIRST_RUN_KEY, true);
+    const tools = describeMissingTools(TOOL_REQUIREMENTS, (n) => resolveTool(n).found);
+    if (tools.missing.some((m) => m.required)) {
+      void vscode.window.showWarningMessage(
+        `STM32: 必須ツールが未導入です\n\n${tools.install}`,
+        "診断する",
+        "導入手順を開く",
+      ).then((choice) => {
+        if (choice === "診断する") {
+          void vscode.commands.executeCommand("stm32ext.diagnose");
+        } else if (choice === "導入手順を開く") {
+          void vscode.commands.executeCommand("vscode.open", vscode.Uri.parse(QUICKSTART_URI));
+        }
+      });
+    }
+  }
 }
 
 export function deactivate(): void {}

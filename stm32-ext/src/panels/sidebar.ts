@@ -206,10 +206,13 @@ export function renderSidebar(
 export const SIDEBAR_CSS = `<style>`
   // NB: keep this above renderSidebar so the <style> block is a plain
   // constant — a stray `</script>` anywhere would truncate the page.
-  // max(), not a literal: a larger editor font-size still wins, but a small
-  // one can no longer shrink the controls below a comfortable reading and
-  // clicking size in a 300px column.
-  + `body{font-family:var(--vscode-font-family,sans-serif);font-size:max(var(--vscode-font-size,13px),var(--stm32ext-ui-font,15px));color:var(--vscode-foreground,#ccc);margin:0;padding:0 8px 24px;line-height:1.5}`
+  // --stm32ext-ui-font is the ONLY font size, deliberately. It used to be
+  // max(vscode-font-size, uiFontPx) while the fixed columns were sized from
+  // uiFontPx alone, so a user on a 16px editor font rendered 16px text inside
+  // a 15px-sized column and the rightmost control was clipped by 5px — the
+  // same failure this sizing work was meant to end, reappearing at the
+  // default. One source, so the columns can never disagree with the text.
+  + `body{font-family:var(--vscode-font-family,sans-serif);font-size:var(--stm32ext-ui-font,15px);color:var(--vscode-foreground,#ccc);margin:0;padding:0 8px 24px;line-height:1.5}`
   + `section{border-top:1px solid var(--vscode-panel-border,rgba(128,128,128,.3));padding:8px 0 10px}`
   + `section:first-child{border-top:none}`
   + `h2{font-size:.92em;font-weight:600;margin:0 0 6px;letter-spacing:.02em}`
@@ -255,12 +258,12 @@ export const SIDEBAR_CSS = `<style>`
   // declaration read as if it were correct.
   //  --valw: `0x` + 8 hex digits = 10 monospace chars at ~0.6x the font, plus
   //          the cell's own 8px padding.
-  //  --opw : three 1.6em square buttons plus their .2em gaps = 1.8em each, so
-  //          5.4x the font, plus the cell's own 8px padding. This column was
-  //          52px once and `overflow:hidden` clipped 除外, the control the
-  //          whole row exists for, so it is never sized below its content.
+  //  --opw : three 1.6em square buttons plus two .2em flex gaps = 5.2x the
+  //          font, plus the cell's own 8px padding. (5.4em was right when the
+  //          spacing came from a trailing margin; with `gap` it is 5.2, and
+  //          the cell no longer has hidden inline text to overflow.)
   // The name column is `auto` and absorbs the rest, ellipsising if it must.
-  + `table.live{--valw:calc(var(--stm32ext-ui-font,15px) * 6 + 8px);--opw:calc(var(--stm32ext-ui-font,15px) * 5.4 + 8px)}`
+  + `table.live{--valw:calc(var(--stm32ext-ui-font,15px) * 6 + 8px);--opw:calc(var(--stm32ext-ui-font,15px) * 5.2 + 8px)}`
   + `table.live th:nth-child(2){width:var(--valw)}`
   + `table.live th:nth-child(3){width:var(--opw)}`
   + `table.live th,table.live td{box-sizing:border-box}`
@@ -284,7 +287,11 @@ export const SIDEBAR_CSS = `<style>`
   // load-bearing: without it the width is the CONTENT box, so three of them
   // plus margins overflow the column and the rightmost one — 除外 — gets
   // clipped and stops being clickable.
-  + `table.live td.o button{box-sizing:border-box;padding:0;margin:0 .2em 0 0;width:1.6em;height:1.6em;min-height:1.6em;line-height:1;font-size:1em;display:inline-flex;align-items:center;justify-content:center}`
+  // gap, not literal spaces or a trailing margin: the cell is a flex row, so
+  // the spacing between the three buttons is part of the width calculation
+  // instead of invisible inline text that --opw cannot account for.
+  + `table.live td.o button{box-sizing:border-box;padding:0;margin:0;width:1.6em;height:1.6em;min-height:1.6em;line-height:1;font-size:1em;display:inline-flex;align-items:center;justify-content:center}`
+  + `table.live td.o{display:flex;justify-content:flex-end;align-items:center;gap:.2em}`
   + `td.v[data-fmt]{cursor:pointer}`
   + `td.v[data-fmt]:hover{background:rgba(128,128,128,.18)}`
   // overflow:visible so a future font-size or padding bump can never silently
@@ -426,11 +433,14 @@ export const SIDEBAR_SCRIPT: string = [
   "  const n = cell('n');",
   "  const v = cell('v'); v.dataset.fmt = '1'; v.title = '10進/16進';",
   "  v.setAttribute('tabindex', '0'); v.setAttribute('role', 'button');",
+  // No literal space text nodes between the buttons: a space is ~0.45em in",
+  // the UI font, so two of them plus the last button's margin made the cell",
+  // content wider than --opw at EVERY size — measured 5/7/8/10px of overflow",
+  // at 12/15/18/22px, pushing × outside the table at 18px and above. The gap",
+  // is CSS now, so the column width is exact by construction.",
   "  const o = cell('o');",
   "  o.appendChild(opButton('add', '+', '監視に追加'));",
-  "  o.appendChild(document.createTextNode(' '));",
   "  o.appendChild(opButton('write', '✎', '値を変更'));",
-  "  o.appendChild(document.createTextNode(' '));",
   "  o.appendChild(opButton('remove', '×', '監視から除外'));",
   "  tr.appendChild(n); tr.appendChild(v); tr.appendChild(o);",
   "  return tr;",
@@ -446,7 +456,6 @@ export const SIDEBAR_SCRIPT: string = [
   "  const v = cell('v');",
   "  const o = cell('o');",
   "  o.appendChild(opButton('add', '+', '監視に追加'));",
-  "  o.appendChild(document.createTextNode(' '));",
   "  o.appendChild(opButton('remove', '×', '監視から除外'));",
   "  tr.appendChild(n); tr.appendChild(v); tr.appendChild(o);",
   "  return tr;",

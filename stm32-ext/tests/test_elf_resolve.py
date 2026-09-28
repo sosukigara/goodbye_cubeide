@@ -32,6 +32,17 @@ EXPECTED_LEAVES = 324
 EXPECTED_STRUCT_NODES = 26
 EXPECTED_ARRAY_NODES = 3
 
+# The tests below assert against the REAL project firmware, which only exists
+# after a build (`ninja -C build-ext`). A fresh clone has no build-ext/, so
+# without this they all fail on a missing file — a red suite that says nothing
+# about the resolver and reads as "the repo is broken". Skipping keeps the
+# signal honest: the DWARF fixture tests (which compile their own ELF) still
+# run everywhere, and the firmware tests run the moment someone builds.
+needs_firmware_elf = pytest.mark.skipif(
+    not os.path.exists(ELF),
+    reason=f"real firmware ELF missing: {ELF} (build the project first)",
+)
+
 
 def run(cmd, **kw):
     return subprocess.run(cmd, capture_output=True, text=True, **kw)
@@ -73,6 +84,7 @@ def depth(node):
 # real firmware ELF
 # ---------------------------------------------------------------------------
 
+@needs_firmware_elf
 def test_debug_symbol_resolves_in_sram():
     assert os.path.exists(ELF), f"real firmware ELF missing: {ELF}"
     p = run([sys.executable, RESOLVE, ELF, "--json"])
@@ -87,6 +99,7 @@ def test_debug_symbol_resolves_in_sram():
     assert "drive.drive_mode" in names
 
 
+@needs_firmware_elf
 def test_offsets_monotonic_within_debugglobal():
     p = run([sys.executable, RESOLVE, ELF, "--json"])
     assert p.returncode == 0, p.stderr
@@ -97,6 +110,7 @@ def test_offsets_monotonic_within_debugglobal():
         assert int(s["address"], 16) == base + s["offset"], s
 
 
+@needs_firmware_elf
 def test_stripped_elf_demands_g3(tmp_path):
     stripped = str(tmp_path / "stripped.elf")
     p = run(["arm-none-eabi-objcopy", "--strip-debug", ELF, stripped])
@@ -106,6 +120,7 @@ def test_stripped_elf_demands_g3(tmp_path):
     assert "-g3" in p.stderr
 
 
+@needs_firmware_elf
 def test_mock_poll_csv_schema_and_rows(tmp_path):
     resolution = str(tmp_path / "resolution.json")
     out = str(tmp_path / "live.csv")
@@ -130,6 +145,7 @@ def test_mock_poll_csv_schema_and_rows(tmp_path):
 # --all-members: the whole type, not a curated list
 # ---------------------------------------------------------------------------
 
+@needs_firmware_elf
 def test_all_members_resolves_every_leaf_with_empty_unresolved():
     res = resolve(args=["--all-members"])
     assert res["unresolved"] == []
@@ -143,6 +159,7 @@ def test_all_members_resolves_every_leaf_with_empty_unresolved():
         assert s["type"] != "?", s         # every type name was resolved
 
 
+@needs_firmware_elf
 def test_tree_is_nested_and_covers_the_whole_struct():
     res = resolve(args=["--all-members"])
     tree = res["tree"]
@@ -165,6 +182,7 @@ def test_tree_is_nested_and_covers_the_whole_struct():
     assert {n["path"] for n in leaves(tree)} == {s["name"] for s in res["symbols"]}
 
 
+@needs_firmware_elf
 def test_tree_leaf_paths_address_the_same_bytes_as_symbols():
     res = resolve(args=["--all-members"])
     base = int(res["base"], 16)
@@ -177,6 +195,7 @@ def test_tree_leaf_paths_address_the_same_bytes_as_symbols():
         assert int(sym["address"], 16) == base + sym["offset"]
 
 
+@needs_firmware_elf
 def test_leaf_size_follows_the_typedef_chain_to_the_base_type():
     index = resolve(args=["--all-members"])["index"]
     # `uint32_t` is a DW_TAG_typedef whose own DW_AT_byte_size is 0, so a
@@ -191,6 +210,7 @@ def test_leaf_size_follows_the_typedef_chain_to_the_base_type():
     assert not [n for n, m in index.items() if m["size"] == 0], index
 
 
+@needs_firmware_elf
 def test_signedness_uses_the_numeric_encoding_constant():
     index = resolve(args=["--all-members"])["index"]
     # DW_ATE_signed (0x05)
@@ -208,6 +228,7 @@ def test_signedness_uses_the_numeric_encoding_constant():
             assert meta["signed"] is False, name
 
 
+@needs_firmware_elf
 def test_drive_controller_is_sixteen_independent_one_byte_bools():
     res = resolve(args=["--all-members"])
     ctl = [s for s in res["symbols"]
@@ -227,6 +248,7 @@ def test_drive_controller_is_sixteen_independent_one_byte_bools():
     assert all("bit_size" not in c for c in node["children"])
 
 
+@needs_firmware_elf
 def test_arrays_report_element_count_and_are_not_pollable():
     res = resolve(args=["--all-members"])
     arrays = {n["path"]: n for n in containers(res["tree"])
@@ -252,6 +274,7 @@ def test_arrays_report_element_count_and_are_not_pollable():
                 assert span + child["size"] <= node["size"], child
 
 
+@needs_firmware_elf
 def test_curated_default_watchlist_still_works():
     res = resolve()
     assert res["unresolved"] == []
@@ -266,6 +289,7 @@ def test_curated_default_watchlist_still_works():
     assert len(res["index"]) == EXPECTED_LEAVES
 
 
+@needs_firmware_elf
 def test_explicit_member_selection_and_unknown_names():
     res = resolve(args=["--member", "sys.loop_hz", "--member", "no.such.leaf"])
     assert [s["name"] for s in res["symbols"]] == ["sys.loop_hz"]
@@ -286,6 +310,7 @@ def _blocked_pyelftools(directory):
     return str(shim)
 
 
+@needs_firmware_elf
 def test_fallback_backend_resolves_without_pyelftools(tmp_path):
     p = run([sys.executable, RESOLVE, ELF, "--all-members", "--json"],
             env={**os.environ,
@@ -302,6 +327,7 @@ def test_fallback_backend_resolves_without_pyelftools(tmp_path):
     assert fallback["index"] == reference["index"]
 
 
+@needs_firmware_elf
 def test_fallback_backend_reports_stripped_elf_too(tmp_path):
     stripped = str(tmp_path / "stripped.elf")
     p = run(["arm-none-eabi-objcopy", "--strip-debug", ELF, stripped])

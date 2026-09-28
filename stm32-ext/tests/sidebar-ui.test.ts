@@ -45,6 +45,19 @@ describe("sidebar: font size is a user setting, and the columns follow it", () =
     expect(css).toMatch(/th:nth-child\(3\)\{width:var\(--opw\)\}/);
     expect(css).toMatch(/td\.o\{width:var\(--opw\)/);
   });
+
+  it("sizes the text from the SAME variable the columns are sized from", () => {
+    // The trap this closes: body was max(vscode-font-size, uiFontPx) while
+    // the columns used uiFontPx alone, so anyone on a 16px editor font got
+    // 16px glyphs in a 15px column and lost 5px of the rightmost control at
+    // the DEFAULT setting. Two sources can disagree; one cannot.
+    const css = renderSidebar(SIDEBAR_PANEL_DEFAULT_STATE, 15);
+    const body = /body\{[^}]*font-size:([^;}]+)/.exec(css);
+    expect(body?.[1]).toBe("var(--stm32ext-ui-font,15px)");
+    // No second font-size source may creep back into the body rule.
+    expect(body?.[1]).not.toContain("max(");
+    expect(body?.[1]).not.toContain("vscode-font-size");
+  });
 });
 
 // --------------------------------------------------------------- DOM stub

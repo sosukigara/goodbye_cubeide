@@ -1,6 +1,9 @@
 // pyOCD flash transport: argv shape, the same safety rails as the
 // CubeProgrammer path (confirmless refused, verify+reset implicit, one retry).
 import { describe, expect, it } from "vitest";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { DEFAULT_FLASH_SETTINGS, type FlashSettings } from "../src/flash/backend.js";
 import {
   buildPyocdArgs,
@@ -127,7 +130,17 @@ describe("flash helpers", () => {
     expect(resolvePyocdPath("").found).toBe(true);
   });
   it("only accepts a real .elf path", () => {
-    expect(isElf("build-ext/firmware.bin")).toBe(false);
-    expect(isElf("build-ext/unit_omni3.elf")).toBe(true);
+    // Built in a temp dir rather than against build-ext/: this asserts the
+    // extension AND the file-exists half of the check, and a checkout that has
+    // never been built has no build-ext/ to find. Failing on a missing local
+    // artifact told the reader nothing about the code under test.
+    const dir = mkdtempSync(join(tmpdir(), "stm32ext-elf-"));
+    const elf = join(dir, "unit_omni3.elf");
+    writeFileSync(elf, "");
+    expect(isElf(elf)).toBe(true);
+    expect(isElf(join(dir, "firmware.bin"))).toBe(false);
+    // Right extension, no such file: still refused, so a stale path is never
+    // handed to `pyocd load`.
+    expect(isElf(join(dir, "absent.elf"))).toBe(false);
   });
 });
