@@ -2395,6 +2395,20 @@ export function firstRunDecision(
   return { show: true, markDone: false };
 }
 
+/**
+ * The first-run notice text.
+ *
+ * A VS Code notification is rendered as ONE row: newlines in the message are
+ * dropped. The multi-line install block this used to embed was therefore
+ * formatted carefully and then thrown away unreadable. The message names the
+ * missing tools and points at the buttons instead; the commands themselves go
+ * to the output channel, which does preserve line breaks.
+ */
+export function firstRunMessage(blockers: readonly ToolRequirement[]): string {
+  const names = blockers.map((m) => m.name).join(", ");
+  return `STM32: 必須ツールが未導入です (${names}) — 導入手順を確認してください`;
+}
+
 /** STM32: 診断 — ツールチェーン・設定・競合をまとめて点検します。 */
 async function diagnose(channel: vscode.OutputChannel): Promise<void> {
   channel.appendLine("[diagnose] STM32 environment check");
@@ -2433,15 +2447,19 @@ async function diagnose(channel: vscode.OutputChannel): Promise<void> {
     : "[diagnose] CubeIDE: not running (OK)");
   const summary = `診断: ツール ${tools.missing.filter((m) => m.required).length === 0 ? "OK" : "不足"} / 設定${settingsOk ? "OK" : "不足"} / CLI ${cli.found ? "検出" : "未検出"} / CubeIDE ${conflict.cubeIde ? "起動中⚠️" : "停止中"}`;
   channel.appendLine(`[diagnose] ${summary} (詳細はこの出力パネル)`);
-  // A first-time user needs the fix, not the verdict: put the install
-  // commands where they can be read without opening the output panel.
+  // The verdict is one line: a VS Code toast collapses newlines, so an
+  // embedded install block was unreadable. The full per-tool commands are in
+  // the output channel above, which preserves them, and the button goes
+  // there rather than to Settings — a missing binary is not a setting.
   if (tools.install !== "") {
-    void vscode.window.showErrorMessage(`${summary}\n\n${tools.install}`, "設定を開く")
-      .then((choice) => {
-        if (choice === "設定を開く") {
-          void vscode.commands.executeCommand("workbench.action.openSettings", "stm32ext");
-        }
-      });
+    void vscode.window.showErrorMessage(
+      `${summary} — 導入コマンドは出力パネルにあります`,
+      "出力パネルを開く",
+    ).then((choice) => {
+      if (choice === "出力パネルを開く") {
+        channel.show(true);
+      }
+    });
     return;
   }
   void vscode.window.showInformationMessage(summary);
@@ -2608,9 +2626,8 @@ export function activate(context: vscode.ExtensionContext): void {
     void context.globalState.update(FIRST_RUN_KEY, true);
   }
   if (firstRun.show) {
-    const names = blockers.map((m) => m.name).join(", ");
     void vscode.window.showWarningMessage(
-      `STM32: 必須ツールが未導入です (${names})\n\n${tools.install}`,
+      firstRunMessage(blockers),
       "診断する",
       "導入手順を開く",
     ).then((choice) => {

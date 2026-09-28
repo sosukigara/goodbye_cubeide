@@ -3,6 +3,7 @@
 // "executable file not found".
 import { describe, expect, it, vi } from "vitest";
 import {
+  firstRunMessage,
   describeMissingTools,
   firstRunDecision,
   TOOL_REQUIREMENTS,
@@ -138,5 +139,26 @@ describe("first-run toolchain preflight", () => {
     expect(firstRunDecision(undefined, [opt, req]).markDone).toBe(false);
     // The decision takes BLOCKERS, so an optional-only list means all clear.
     expect(firstRunDecision(undefined, []).markDone).toBe(true);
+  });
+
+  it("keeps the user-facing text one line, because a toast collapses newlines", () => {
+    // VS Code renders a notification as a single row: every "\n" in the
+    // message is dropped. The install block used to be embedded in both the
+    // first-run warning and 診断, so "which tool, and what do I type" was
+    // formatted carefully and then thrown away unreadable.
+    const req = (name: string): ToolRequirement => ({
+      name, needed: "用途", install: "apt install x", required: true,
+    });
+    // The install text is multi-line by design — that is why it must NOT be
+    // the notification body.
+    const install = describeMissingTools([req("ninja"), req("python3")], () => false).install;
+    expect(install).toContain("\n");
+    // The message the user actually sees is one line, and names the tools.
+    const msg = firstRunMessage([req("ninja"), req("python3")]);
+    expect(msg).not.toContain("\n");
+    expect(msg).toContain("ninja");
+    expect(msg).toContain("python3");
+    // It must not smuggle the command block back in.
+    expect(msg).not.toContain("apt install");
   });
 });

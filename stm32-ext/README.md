@@ -20,7 +20,7 @@ skip されるもの（失敗ではありません）:
 | 実機ファームウェアの ELF を要する Python テスト | `build-ext/*.elf` 無し（未ビルド） | `needs_firmware_elf` で skip |
 | DWARF の fixture テスト | `arm-none-eabi-gcc` 無し | `GCC is None` で skip |
 
-`pytest` が入っていない環境では Python の段だけ skip されます（`npm run test:py` を個別に実行すれば明白に分かります）。
+`pytest` が入っていない環境では Python の段だけ skip されます（`npm run test:py` を個別に実行すればすぐに分かります）。
 
 ### 必要なもの
 
@@ -31,8 +31,8 @@ skip されるもの（失敗ではありません）:
 | Node.js 18+ / npm | ○ | 拡張機能のパッケージング |
 | `arm-none-eabi-gcc` | ○ | ファームウェアのコンパイル |
 | `ninja` | ○ | ビルドの実行 |
-| `python3` | ○ | Live 監視のサイドカー |
-| `pyocd` | ○ | 書き込みと Live 監視（`pip install --user pyocd`） |
+| `python3` | ○ | DWARF からの型解決と Live 監視のサイドカー |
+| `pyocd` | △ | 書き込みと Live 監視のみ（`pip install --user pyocd`） |
 | `ccache` | △ | ビルドキャッシュ。無くても動きますが遅くなります |
 | ST-LINK | 実機のみ | 接続。机上で動かすだけなら不要です |
 
@@ -43,7 +43,7 @@ sudo apt install gcc-arm-none-eabi ninja-build python3 ccache
 pip install --user pyocd
 ```
 
-`pyocd` が無くても **ビルドと型解析は動きます**。「何もできない」状況を作らないためです。
+`pyocd` が無くても **ビルドと型解析は動きます**。「何もできない」状況を作らないためです。表の `△` は「その機能だけ使えない」を意味します。
 
 ### VSCode に読み込む
 
@@ -138,7 +138,7 @@ webview の HTML は起動時に 1 度だけ設定され、以降はメッセー
 | `stm32ext.pollHz` | number, 1–200 | `100` | Live のポーリング周波数 |
 | `stm32ext.uiFontPx` | number, 12–22 | `15` | サイドバーの基本文字サイズ(px)。操作ボタンのタップ領域と値列/操作列の幅はこれに追従します。変更後は `Developer: Reload Window`（または再起動）が必要です。サイドバーの HTML は 1 度だけ生成されるためです |
 
-`probe` / `interface` / `resetMode` / `pollHz` は上の表の既定値で有效的です。ホストは設定値が**空のときだけ**操作を止め、空になるのは利用者が明示的に `""` にした場合だけです。`cliPath` も `flashTool=cubeprogr` のときしか必須になりません（pyOCD 経路はベンダーツールチェーン不要）。`uiFontPx` は既定値を持つ表示設定なので、この必須設定の検査には含まれません。
+`probe` / `interface` / `resetMode` / `pollHz` は上の表の既定値でそのまま動きます。ホストは設定値が**空のときだけ**操作を止め、空になるのは利用者が明示的に `""` にした場合だけです。`cliPath` も `flashTool=cubeprogr` のときしか必須になりません（pyOCD 経路はベンダーツールチェーン不要）。`uiFontPx` は既定値を持つ表示設定なので、この必須設定の検査には含まれません。
 
 ## コマンド
 
