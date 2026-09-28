@@ -2372,6 +2372,29 @@ export function describeMissingTools(
   };
 }
 
+/**
+ * What the first-run notice should do this activation.
+ *
+ * Split out as a pure decision so the one rule that actually matters is
+ * testable: the "seen it" flag is written ONLY once nothing is missing.
+ * Writing it unconditionally meant a user who dismissed the notice never saw
+ * it again, not even after installing half of what was missing — the one
+ * path where nagging is exactly the right behaviour.
+ */
+export function firstRunDecision(
+  alreadyShown: unknown,
+  blockers: readonly ToolRequirement[],
+): { show: boolean; markDone: boolean } {
+  // The flag only suppresses the notice once there is nothing left to say.
+  // Keying off `alreadyShown` ALONE is the bug this replaced: a user who
+  // dismissed the notice never heard about the tool again, even after
+  // installing half of it. Nudging is correct while the problem persists.
+  if (blockers.length === 0) {
+    return { show: false, markDone: alreadyShown !== true };
+  }
+  return { show: true, markDone: false };
+}
+
 /** STM32: 診断 — ツールチェーン・設定・競合をまとめて点検します。 */
 async function diagnose(channel: vscode.OutputChannel): Promise<void> {
   channel.appendLine("[diagnose] STM32 environment check");
@@ -2576,35 +2599,30 @@ export function activate(context: vscode.ExtensionContext): void {
   channel.appendLine("STM32 extension active (sidebar).");
 
   // First run: say what is missing BEFORE the user hits a build button and
-  // reads "executable file not found". Never blocks activation.
-  //
-  // The flag is set only when the environment is COMPLETE. Setting it
-  // unconditionally on the first activation meant a user who dismissed the
-  // notice — or who had not installed anything yet — never saw it again,
-  // even after installing half of it. It is keyed per machine, so a returning
-  // user with a working toolchain is not nagged.
-  if (context.globalState.get(FIRST_RUN_KEY) !== true) {
-    const tools = describeMissingTools(TOOL_REQUIREMENTS, (n) => resolveTool(n).found);
-    const blockers = tools.missing.filter((m) => m.required);
-    if (blockers.length === 0) {
-      void context.globalState.update(FIRST_RUN_KEY, true);
-    } else {
-      const names = blockers.map((m) => m.name).join(", ");
-      void vscode.window.showWarningMessage(
-        `STM32: 必須ツールが未導入です (${names})\n\n${tools.install}`,
-        "診断する",
-        "導入手順を開く",
-      ).then((choice) => {
-        if (choice === "診断する") {
-          void vscode.commands.executeCommand("stm32ext.diagnose");
-        } else if (choice === "導入手順を開く") {
-          void vscode.commands.executeCommand(
-            "vscode.open",
-            vscode.Uri.file(join(context.extensionPath, QUICKSTART_RELATIVE_PATH)),
-          );
-        }
-      });
-    }
+  // reads "executable file not found". Never blocks activation. The rule
+  // lives in firstRunDecision so it is testable rather than buried here.
+  const tools = describeMissingTools(TOOL_REQUIREMENTS, (n) => resolveTool(n).found);
+  const blockers = tools.missing.filter((m) => m.required);
+  const firstRun = firstRunDecision(context.globalState.get(FIRST_RUN_KEY), blockers);
+  if (firstRun.markDone) {
+    void context.globalState.update(FIRST_RUN_KEY, true);
+  }
+  if (firstRun.show) {
+    const names = blockers.map((m) => m.name).join(", ");
+    void vscode.window.showWarningMessage(
+      `STM32: 必須ツールが未導入です (${names})\n\n${tools.install}`,
+      "診断する",
+      "導入手順を開く",
+    ).then((choice) => {
+      if (choice === "診断する") {
+        void vscode.commands.executeCommand("stm32ext.diagnose");
+      } else if (choice === "導入手順を開く") {
+        void vscode.commands.executeCommand(
+          "vscode.open",
+          vscode.Uri.file(join(context.extensionPath, QUICKSTART_RELATIVE_PATH)),
+        );
+      }
+    });
   }
 }
 

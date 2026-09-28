@@ -312,12 +312,16 @@ describe("runNinja resolves the build dir exactly once", () => {
 });
 
 describe("toolchain lookup", () => {
-  it("finds ninja even when the GUI session PATH omits ~/.local/bin", () => {
-    // Regression: ninja lives in ~/.local/bin, which is NOT in /etc/environment,
-    // so a desktop-launched VS Code could not spawn it at all.
-    const r = resolveTool("ninja", { PATH: "/usr/bin:/bin" });
-    expect(r.found).toBe(true);
-    expect(r.path).toMatch(/ninja/);
+  it("searches ~/.local/bin even when the supplied PATH omits it", () => {
+    // The regression: a desktop session's PATH omits ~/.local/bin, so a tool
+    // living there could not be spawned. Asserting against a real
+    // /usr/bin/ninja made this machine-dependent — a contributor without the
+    // ARM toolchain got a red suite saying nothing about this code. What is
+    // actually guaranteed is the SEARCH, so assert that: the extra directory
+    // is probed even when PATH points somewhere that has nothing.
+    const r = resolveTool("definitely-not-a-real-tool-xyz", { PATH: "/nonexistent" });
+    expect(r.searched.some((p) => p.includes(join(".local", "bin")))).toBe(true);
+    expect(r.found).toBe(false);
   });
   it("reports a searched list when nothing is found", () => {
     const r = resolveTool("definitely-not-a-real-tool-xyz", { PATH: "/usr/bin:/bin" });

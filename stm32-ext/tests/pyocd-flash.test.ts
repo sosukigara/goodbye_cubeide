@@ -126,7 +126,13 @@ describe("pyocd flash safety rails", () => {
 });
 
 describe("flash helpers", () => {
-  it("finds pyocd on this machine (it is a live-monitor dependency)", () => {
+  // This probes the real PATH, so it can only be true on a machine that has
+  // pyocd. A contributor without one got a red suite saying nothing about
+  // this code — the same trap as the build-ext/ ELF case. Skipped rather than
+  // deleted: where pyocd IS installed it still guards the lookup, which is
+  // what broke a desktop-launched VS Code with a truncated PATH.
+  it.skipIf(!resolvePyocdPath("").found)("finds pyocd when it is installed", () => {
+    expect(resolvePyocdPath("").cli).toMatch(/pyocd/);
     expect(resolvePyocdPath("").found).toBe(true);
   });
   it("only accepts a real .elf path", () => {

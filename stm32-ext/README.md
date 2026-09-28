@@ -11,7 +11,16 @@ npm ci
 npm run verify     # typecheck → vitest → pytest → compile
 ```
 
-`npm run verify` は clone 直後の状態で **TypeScript 321 件 + Python 97 件**が green になります。実機ファームウェアの ELF を要する 15 件は firmware 未ビルドなら skip されます（失敗ではなく、正しく skip としてカウントされます）。DWARF の fixture テストは自分の ELF をコンパイルするので、どんな環境でも必ず走ります。
+`npm run verify` は clone 直後（ビルド成果物なし）で **green** になります。件数は環境によって変わりますので、`passed` / `skipped` の行をそのまま読んでください。
+
+skip されるもの（失敗ではありません）:
+
+| 対象 | 条件 | 出し方 |
+|---|---|---|
+| 実機ファームウェアの ELF を要する Python テスト | `build-ext/*.elf` 無し（未ビルド） | `needs_firmware_elf` で skip |
+| DWARF の fixture テスト | `arm-none-eabi-gcc` 無し | `GCC is None` で skip |
+
+`pytest` が入っていない環境では Python の段だけ skip されます（`npm run test:py` を個別に実行すれば明白に分かります）。
 
 ### 必要なもの
 
@@ -129,7 +138,7 @@ webview の HTML は起動時に 1 度だけ設定され、以降はメッセー
 | `stm32ext.pollHz` | number, 1–200 | `100` | Live のポーリング周波数 |
 | `stm32ext.uiFontPx` | number, 12–22 | `15` | サイドバーの基本文字サイズ(px)。操作ボタンのタップ領域と値列/操作列の幅はこれに追従します。変更後は `Developer: Reload Window`（または再起動）が必要です。サイドバーの HTML は 1 度だけ生成されるためです |
 
-`probe` / `interface` / `resetMode` / `pollHz` のいずれかが未設定なら、書き込みも監視も開始せずどの操作も行いません。`uiFontPx` は既定値を持つ表示設定なので、この必須設定の検査には含まれません。
+`probe` / `interface` / `resetMode` / `pollHz` は上の表の既定値で有效的です。ホストは設定値が**空のときだけ**操作を止め、空になるのは利用者が明示的に `""` にした場合だけです。`cliPath` も `flashTool=cubeprogr` のときしか必須になりません（pyOCD 経路はベンダーツールチェーン不要）。`uiFontPx` は既定値を持つ表示設定なので、この必須設定の検査には含まれません。
 
 ## コマンド
 

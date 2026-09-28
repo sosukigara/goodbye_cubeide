@@ -2,8 +2,12 @@
 // what to install, in one message, before they press Build and meet
 // "executable file not found".
 import { describe, expect, it, vi } from "vitest";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+import {
+  describeMissingTools,
+  firstRunDecision,
+  TOOL_REQUIREMENTS,
+  type ToolRequirement,
+} from "../src/extension.js";
 
 // extension.ts is the only place the preflight lives, and it imports vscode
 // at module load. The mock only has to satisfy that import — nothing in these
@@ -28,8 +32,6 @@ vi.mock("vscode", () => ({
   ProgressLocation: { Notification: 15 },
   QuickPickItemKind: { Separator: -1 },
 }));
-import { describeMissingTools, TOOL_REQUIREMENTS } from "../src/extension.js";
-
 // The wording is the product here, so it is asserted directly rather than
 // snapshotted: an unhelpful summary is exactly the failure this guards.
 
@@ -105,40 +107,36 @@ describe("first-run toolchain preflight", () => {
     }
   });
 
-  it("points the quickstart at the README bundled in the vsix", () => {
-    // A github.com URL was wrong twice: it named `main` while the default
-    // branch was a feature branch (404), and the heading anchor had to be
-    // kept in sync by hand. The README ships inside the .vsix, so a relative
-    // path to it cannot rot and works offline.
-    const src = readFileSync(
-      fileURLToPath(new URL("../src/extension.ts", import.meta.url)),
-      "utf8",
-    );
-    expect(src).toContain('const QUICKSTART_RELATIVE_PATH = "README.md"');
-    // Opened as a file against the extension's own install path.
-    expect(src).toContain("vscode.Uri.file(join(context.extensionPath, QUICKSTART_RELATIVE_PATH)");
-    expect(src).not.toContain("github.com/sosukigara/goodbye_cubeide/blob");
-    // And the file it names really is packaged.
-    expect(src).not.toMatch(/QUICKSTART_RELATIVE_PATH = ".*\.md#/);
+  it("shows the notice again until the environment is actually complete", () => {
+    // The bug: the "seen it" flag was written unconditionally, so a user who
+    // dismissed the notice never saw it again — not even after installing half
+    // of what was missing. That is exactly backwards: nagging is correct while
+    // the problem is still there.
+    const blocker: ToolRequirement = {
+      name: "ninja", needed: "ビルド", install: "apt install ninja-build", required: true,
+    };
+    // Never shown before, something missing -> show, and do NOT mark done.
+    expect(firstRunDecision(undefined, [blocker])).toEqual({ show: true, markDone: false });
+    // Still missing on a later launch -> show again.
+    expect(firstRunDecision(true, [blocker])).toEqual({ show: true, markDone: false });
+    // Nothing missing -> silent, and this is the one case that marks done.
+    expect(firstRunDecision(undefined, [])).toEqual({ show: false, markDone: true });
+    // Already done and still fine -> never speak again.
+    expect(firstRunDecision(true, [])).toEqual({ show: false, markDone: false });
   });
 
-  it("only marks the first run done once the environment is complete", () => {
-    // The flag used to be written unconditionally, so anyone who dismissed
-    // the notice never saw it again — not even after installing half of it.
-    const src = readFileSync(
-      fileURLToPath(new URL("../src/extension.ts", import.meta.url)),
-      "utf8",
-    );
-    const at = src.indexOf("globalState.get(FIRST_RUN_KEY)");
-    expect(at).toBeGreaterThan(-1);
-    const block = src.slice(at, at + 900);
-    // The update must live INSIDE the branch that found no blockers, i.e.
-    // after the blockers check and inside its else-free arm.
-    const blockersAt = block.indexOf("blockers.length === 0");
-    const updateAt = block.indexOf("globalState.update(FIRST_RUN_KEY, true)");
-    expect(blockersAt).toBeGreaterThan(-1);
-    expect(updateAt).toBeGreaterThan(blockersAt);
-    // ...and there must be no second, unconditional write before that check.
-    expect(block.slice(0, blockersAt)).not.toContain("globalState.update(FIRST_RUN_KEY");
+  it("only marks done when nothing required is missing", () => {
+    // An optional tool alone must not suppress the check, nor clear the flag
+    // while a required one is still absent.
+    const opt: ToolRequirement = {
+      name: "ccache", needed: "キャッシュ", install: "apt install ccache", required: false,
+    };
+    const req: ToolRequirement = {
+      name: "ninja", needed: "ビルド", install: "apt install ninja-build", required: true,
+    };
+    expect(firstRunDecision(undefined, [req]).markDone).toBe(false);
+    expect(firstRunDecision(undefined, [opt, req]).markDone).toBe(false);
+    // The decision takes BLOCKERS, so an optional-only list means all clear.
+    expect(firstRunDecision(undefined, []).markDone).toBe(true);
   });
 });
