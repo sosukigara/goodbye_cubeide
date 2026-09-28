@@ -13,7 +13,6 @@ import {
   MOTOR_DRIVE_WARNING,
 } from "../src/live/allowlist.js";
 import {
-  debugRange,
   findSymbol,
   isStripError,
   parseElfResolutionJson,
@@ -29,7 +28,9 @@ import {
   passesDropBudget,
 } from "../src/live/poller.js";
 
-const RANGE = { base: 0x200000bc, end: 0x20000464 };
+// The extent a resolved symbol occupies. There is no DebugGlobal window any
+// more: the write is checked against the target's own bytes.
+const RANGE = { base: 0x200000bc, size: 4 };
 const STAMP = "2026-09-18T00:00:00.000Z";
 
 function fakeResolution() {
@@ -66,7 +67,6 @@ describe("elfResolver", () => {
     expect(findSymbol(res, "sys.loop_hz")?.address).toBe("0x200000bc");
     expect(findSymbol(res, "sys.loop_hz")?.type).toBe("uint32_t");
     expect(findSymbol(res, "nope")).toBeUndefined();
-    expect(debugRange(res)).toEqual({ base: 0x200000bc, end: 0x20000464 });
   });
 
   it("strip failure maps to the explicit -g3 error", async () => {
@@ -124,17 +124,50 @@ describe("allowlist writes", () => {
     }
   });
 
-  it("out-of-range address is refused (no arbitrary writes)", () => {
+  it("a write that does not fit the resolved symbol is refused", () => {
+    // This replaced the DebugGlobal fence. The address itself is now free —
+    // any symbol the host could resolve is writable — but the write still has
+    // to stay inside the object the host said it was writing, so a width or an
+    // address that overruns the extent is refused.
     const v = decideWrite(
-      { target: { name: "evil", address: "0x20001000", size: 4 }, value: "0x1", confirmed: true },
+      { target: { name: "runaway", address: "0x20001000", size: 4 }, value: "0x1", confirmed: true },
       RANGE,
       STAMP,
     );
     expect(v.ok).toBe(false);
     if (!v.ok) {
-      expect(v.reason).toMatch(/outside DebugGlobal/);
+      expect(v.reason).toMatch(/does not fit/);
       expect(v.audit).toContain("REFUSED");
     }
+  });
+
+  it("an address OUTSIDE DebugGlobal is allowed once it fits its own symbol", () => {
+    // The whole point of the change: a tuner global or a plain counter lives
+    // outside DebugGlobal and was previously unreachable for editing.
+    const v = decideWrite(
+      { target: { name: "tuner_params", address: "0x20001000", size: 4 }, value: "0x1", confirmed: true },
+      { base: 0x20001000, size: 4 },
+      STAMP,
+    );
+    expect(v.ok).toBe(true);
+  });
+
+  it("a write that runs off the END of its own symbol is still refused", () => {
+    const v = decideWrite(
+      { target: { name: "flag", address: "0x20001003", size: 4 }, value: "0x1", confirmed: true },
+      { base: 0x20001000, size: 4 },
+      STAMP,
+    );
+    expect(v.ok).toBe(false);
+  });
+
+  it("a zero-width symbol is refused rather than treated as unbounded", () => {
+    const v = decideWrite(
+      { target: { name: "ghost", address: "0x20001000", size: 4 }, value: "0x1", confirmed: true },
+      { base: 0x20001000, size: 0 },
+      STAMP,
+    );
+    expect(v.ok).toBe(false);
   });
 
   it("unresolved (non-hex) address is refused", () => {
@@ -164,7 +197,7 @@ describe("allowlist writes", () => {
     expect(isMotorDrivePath("sys.loop_hz")).toBe(false);
     const v = decideWrite(
       { target: { name: "drive.drive_mode", address: "0x2000010c", size: 4 }, value: "0x1", confirmed: true },
-      RANGE,
+      { base: 0x2000010c, size: 4 },
       STAMP,
     );
     expect(v.ok).toBe(true);
@@ -173,21 +206,21 @@ describe("allowlist writes", () => {
     }
   });
 
-  it("writeFlow orchestration contract: pre-modal probe (confirmed:true) passes range, final gate enforces the modal", () => {
+  it("writeFlow orchestration contract: pre-modal probe (confirmed:true) checks the extent, final gate enforces the modal", () => {
     // Regression for oracle MUST-FIX: writeFlow must probe with confirmed:true
     // pre-modal (pure function, no side effects). Probing with confirmed:false
     // always refuses and would make the confirm modal dead code.
     const req = { target: { name: "sys.loop_hz", address: "0x200000bc", size: 4 }, value: "0x1" };
     const probe = decideWrite({ ...req, confirmed: true }, RANGE, STAMP);
-    expect(probe.ok).toBe(true); // in-range target reaches the modal
+    expect(probe.ok).toBe(true); // a target that fits its extent reaches the modal
     const noConfirm = decideWrite({ ...req, confirmed: false }, RANGE, STAMP);
     expect(noConfirm.ok).toBe(false); // dismissed modal stays refused
-    const outOfRange = decideWrite(
+    const overruns = decideWrite(
       { target: { name: "evil", address: "0x20001000", size: 4 }, value: "0x1", confirmed: true },
       RANGE,
       STAMP,
     );
-    expect(outOfRange.ok).toBe(false); // out-of-range never reaches the modal
+    expect(overruns.ok).toBe(false); // a write that does not fit never reaches the modal
   });
 });
 

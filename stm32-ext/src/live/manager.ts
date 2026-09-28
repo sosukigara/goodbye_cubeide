@@ -217,13 +217,57 @@ export function readNewSamples(csv: string, fromLine: number): { samples: LiveSa
   return { samples, nextLine };
 }
 
-/** Parse `nm -S --defined-only` output for a global symbol address (0x...). */
+/**
+ * Parse `nm -S --defined-only` output for a global symbol address (0x...).
+ *
+ * The address alone is what the watch path needs — an extra of unknown width
+ * is polled at the firmware-global default — so this accepts a line with or
+ * without the `-S` size column. Only the write path insists on a width.
+ */
 export function parseNmSymbol(nmStdout: string, name: string): string | undefined {
+  return matchNmSymbol(nmStdout, name)?.address;
+}
+
+/**
+ * Parse `nm -S --defined-only` for a symbol's address AND width.
+ *
+ * `-S` puts a size on EVERY defined symbol, so the four-field form is what
+ * real tools emit. Measured on a cortex-m4 object, every line had four
+ * fields:
+ *
+ *     00000000 00000001 B bss_byte
+ *     00000000 00000014 T main
+ *
+ * A parser written against the three-field shape matched none of that and
+ * returned undefined for every real ELF. A line still lacking a width now
+ * yields undefined rather than a guess: guessing here would be guessing a
+ * WRITE WIDTH, and a symbol reported "B" but actually 4 bytes wide would be
+ * written as one byte while a 16-bit symbol guessed as 4 would clobber its
+ * neighbour. No width means no write, which is the safe direction.
+ */
+export function parseNmSymbolSize(
+  nmStdout: string,
+  name: string,
+): { address: string; size: number } | undefined {
+  const m = matchNmSymbol(nmStdout, name);
+  return m?.size === undefined ? undefined : { address: m.address, size: m.size };
+}
+
+/** One matching nm line: its address, and its width when `-S` reported one. */
+function matchNmSymbol(
+  nmStdout: string,
+  name: string,
+): { address: string; size: number | undefined } | undefined {
   for (const raw of nmStdout.split("\n")) {
-    const m = /^([0-9a-fA-F]+)\s+[A-Za-z]\s+(\S+)\s*$/.exec(raw.trim());
-    if (m !== null && m[2] === name) {
-      return `0x${(m[1] ?? "").toLowerCase().padStart(8, "0")}`;
+    const m = /^([0-9a-fA-F]+)\s+(?:([0-9a-fA-F]+)\s+)?([A-Za-z])\s+(\S+)$/.exec(raw.trim());
+    if (m === null || m[4] !== name) {
+      continue;
     }
+    const parsed = m[2] === undefined ? Number.NaN : Number.parseInt(m[2], 16);
+    return {
+      address: `0x${(m[1] ?? "").toLowerCase().padStart(8, "0")}`,
+      size: Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined,
+    };
   }
   return undefined;
 }

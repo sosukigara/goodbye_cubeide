@@ -30,7 +30,6 @@ import {
   type WriteResult,
 } from "./live/writeChannel";
 import {
-  debugRange,
   findSymbol,
   resolveElf,
   type ElfResolution,
@@ -64,6 +63,7 @@ import {
   filterWatchedSymbols,
   isProbeBusyOutput,
   parseNmSymbol,
+  parseNmSymbolSize,
   readNewSamples,
   readSessionLock,
   resolveWatchlist,
@@ -1322,7 +1322,47 @@ export class LivePanelProvider {
     }
     return text.endsWith("\n") ? text : `${text}\n`;
   }
-  /** DebugGlobal-allowlisted write: unresolved/out-of-range refused, modal confirm + motor warning. */
+
+  /**
+   * Place a name in memory for writing: DebugGlobal leaf first, then `nm`.
+   *
+   * The DWARF tree is authoritative where it exists because it carries the
+   * type, but it only describes DebugGlobal. `nm` covers the rest of the
+   * firmware's globals, and its `-S` size is what the 1/2/4/8 gate needs — a
+   * symbol whose width cannot be read is not writable rather than guessed at.
+   */
+  private async resolveWritable(name: string): Promise<{ address: string; size: number; type: string } | undefined> {
+    const leaf = this.resolution === undefined ? undefined : findSymbol(this.resolution, name);
+    if (leaf !== undefined) {
+      return { address: leaf.address, size: leaf.size, type: leaf.type };
+    }
+    const elf = this.resolution?.elf;
+    if (elf === undefined) {
+      return undefined;
+    }
+    try {
+      const r = await spawnCli("arm-none-eabi-nm", ["-S", "--defined-only", elf]);
+      const found = parseNmSymbolSize(`${r.stdout}\n${r.stderr}`, name);
+      if (found === undefined) {
+        return undefined;
+      }
+      this.slog(`write: ${name} resolved by nm at ${found.address} (${found.size} bytes)`);
+      return { address: found.address, size: found.size, type: "nm" };
+    } catch (err) {
+      this.slog(`write: nm resolve failed: ${err instanceof Error ? err.message : String(err)}`);
+      return undefined;
+    }
+  }
+  /**
+   * Write a variable the user picked. Any symbol the host can resolve from the
+   * ELF is writable, not just the leaves of DebugGlobal — elf_resolve.py only
+   * describes that one struct, so a tuner global or a plain counter is
+   * resolved through `nm` instead, exactly as the watch path does.
+   *
+   * Resolution is the guard that matters now that the DebugGlobal fence is
+   * gone: a name that no tool can place in memory is refused before any
+   * prompt appears.
+   */
   private async writeFlow(name: string, value: string): Promise<void> {
     const stamp = new Date().toISOString();
     const done = (message: string): void => {
@@ -1334,13 +1374,14 @@ export class LivePanelProvider {
       done(reason);
       return;
     }
-    const sym = findSymbol(this.resolution, name);
-    if (sym === undefined) {
-      const reason = `refused: ${name} unresolved (not in ELF resolution)`;
+    const resolved = await this.resolveWritable(name);
+    if (resolved === undefined) {
+      const reason = `refused: ${name} unresolved (not a symbol in the ELF)`;
       this.channel.appendLine(`[live-write] ${stamp} REFUSED(${reason}) ${name} value=${value}`);
       done(reason);
       return;
     }
+    const sym = resolved;
     // D12: the leaf width is what live_write.py needs and what the sidecar
     // can actually move (1/2/4/8). A struct member resolved to 0 or 3 bytes
     // would be refused there with no explanation, so say so here.
@@ -1369,7 +1410,7 @@ export class LivePanelProvider {
     // below dead code. The modal + final confirmed:true gate stay mandatory.
     const verdict = decideWrite(
       { target: { name, address: sym.address, size: sym.size }, value: bits, confirmed: true },
-      debugRange(this.resolution),
+      { base: Number.parseInt(sym.address, 16), size: sym.size },
       stamp,
     );
     if (!verdict.ok) {
@@ -1383,7 +1424,7 @@ export class LivePanelProvider {
     const shown = current === undefined ? "" : ` 現在値: ${decodeValue(current, this.leafMeta.get(name))}`;
     const warn = isMotorDrivePath(name) ? `${MOTOR_DRIVE_WARNING}\n\n` : "";
     const confirm = await vscode.window.showWarningMessage(
-      `${warn}Write ${value} to ${name}@${sym.address}? (${sym.type}, ${sym.size} byte${shown})\n→ 0x${BigInt(bits).toString(16).padStart(sym.size * 2, "0")}\n(DebugGlobal allowlist)`,
+      `${warn}Write ${value} to ${name}@${sym.address}? (${sym.type}, ${sym.size} byte${shown})\n→ 0x${BigInt(bits).toString(16).padStart(sym.size * 2, "0")}\n(${sym.size}-byte symbol; the sidecar re-checks this extent)`,
       { modal: true },
       "Write",
     );
@@ -1394,7 +1435,7 @@ export class LivePanelProvider {
     }
     const finalVerdict = decideWrite(
       { target: { name, address: sym.address, size: sym.size }, value: bits, confirmed: true },
-      debugRange(this.resolution),
+      { base: Number.parseInt(sym.address, 16), size: sym.size },
       stamp,
     );
     if (!finalVerdict.ok) {
@@ -1438,7 +1479,7 @@ export class LivePanelProvider {
       return { id: "", ok: false, error: "no live session (start 監視開始 first)" };
     }
     const { id, done: answer } = this.pendingWrites.expect();
-    const line = buildWriteRequest(id, address, size, value);
+    const line = buildWriteRequest(id, address, size, value, address, size);
     await new Promise<void>((resolve, reject) => {
       stdin.write(`${line}\n`, (err) => (err === null || err === undefined ? resolve() : reject(err)));
     }).catch((err: unknown) => {

@@ -54,9 +54,15 @@ class FakeProbe:
         self._target = FakeTarget()
 
 
-def req(**kw):
-    base = {"id": "r1", "op": "write", "address": "0x20001100",
-            "size": 4, "value": "1287"}
+def req(address="0x20001100", size=4, **kw):
+    """A request as the host now sends it: the symbol's own extent included.
+
+    The write is no longer fenced to DebugGlobal, so `base`/`symbolSize`
+    describe the target itself. The defaults make a 4-byte variable at
+    0x20001100, which is the common case and the one the sidecar sees most.
+    """
+    base = {"id": "r1", "op": "write", "address": address, "size": size,
+            "value": "1287", "base": address, "symbolSize": size}
     base.update(kw)
     return base
 
@@ -66,7 +72,7 @@ def write_one(probe, **kw):
     out = []
     q = queue.Queue()
     q.put(req(**kw))
-    live_write.drain(q, probe, BASE, END, out.append)
+    live_write.drain(q, probe, out.append)
     return out[0]
 
 
@@ -77,13 +83,13 @@ def seed(probe, addr, value):
 def test_write_reaches_memory_and_reads_back():
     probe = FakeProbe()
     out = []
-    live_write.drain(queue.Queue(), probe, BASE, END, out.append)
+    live_write.drain(queue.Queue(), probe, out.append)
     # nothing queued: no traffic
     assert out == []
 
     q = queue.Queue()
     q.put(req())
-    live_write.drain(q, probe, BASE, END, out.append)
+    live_write.drain(q, probe, out.append)
     assert probe._target.mem[0x20001100] == 1287
     assert out[0]["ok"] is True
     assert out[0]["readback"] == "0x00000507"
@@ -107,7 +113,7 @@ def test_a_word_the_firmware_rewrites_is_a_success_not_a_failure():
     out = []
     q = queue.Queue()
     q.put(req(value="805306368"))
-    live_write.drain(q, probe, BASE, END, out.append)
+    live_write.drain(q, probe, out.append)
     assert out[0]["ok"] is True
     assert out[0]["value"] == "0x30000000"
     assert out[0]["readback"] == "0x000002dd"
@@ -118,25 +124,27 @@ def test_write_never_halts_the_core():
     probe = FakeProbe()
     q = queue.Queue()
     q.put(req())
-    live_write.drain(q, probe, BASE, END, lambda _r: None)
+    live_write.drain(q, probe, lambda _r: None)
     assert probe._target.halted is False
 
 
 @pytest.mark.parametrize("bad", [
-    {"address": "0x20000000"},   # below DebugGlobal
-    {"address": "0x20001fff"},   # last byte of a 4-byte word runs past the end
-    {"address": "0xdeadbeef"},
+    # "Out of range" now means "does not fit the symbol the host declared".
+    {"address": "0x20001000", "base": "0x20001100", "symbolSize": 4},
+    {"address": "0x200010ff", "size": 4, "base": "0x200010ff", "symbolSize": 1},
+    {"symbolSize": 0},           # a symbol of no bytes is not a target
     {"op": "read"},              # only writes are routable
     {"size": 3},                 # no 24-bit member
     {"value": "not-a-number"},
     {"id": ""},
+    {"base": "not-a-number"},    # the extent must be a number to be checked
 ])
 def test_out_of_range_and_malformed_requests_are_refused(bad):
     probe = FakeProbe()
     out = []
     q = queue.Queue()
     q.put(req(**bad))
-    live_write.drain(q, probe, BASE, END, out.append)
+    live_write.drain(q, probe, out.append)
     assert out[0]["ok"] is False
     assert out[0]["error"]
     assert probe._target.writes == 0
@@ -147,7 +155,7 @@ def test_value_too_wide_for_the_symbol_is_refused():
     out = []
     q = queue.Queue()
     q.put(req(value="0x1FFFFFFFF"))
-    live_write.drain(q, probe, BASE, END, out.append)
+    live_write.drain(q, probe, out.append)
     assert out[0]["ok"] is False
     assert probe._target.writes == 0
 
@@ -167,7 +175,7 @@ def test_a_failing_write_does_not_stop_later_requests():
     q.put(req(id="a"))
     q.put({"garbage": True})
     q.put(req(id="b"))
-    live_write.drain(q, probe, BASE, END, out.append)
+    live_write.drain(q, probe, out.append)
     assert [r["id"] for r in out] == ["a", None, "b"]
 
 
@@ -266,15 +274,37 @@ def test_each_word_is_read_immediately_before_it_is_written():
     ]
 
 
-def test_a_write_that_needs_a_word_outside_the_fence_is_refused_before_the_bus():
-    """An unaligned DebugGlobal start: the member is inside, its word is not."""
+def test_a_narrow_unaligned_write_is_served_and_keeps_its_neighbours():
+    """The word fence used to refuse this outright.
+
+    With a fence one symbol wide, every 1- or 2-byte member straddles it — a
+    byte at base occupies [base, base+4), so the word could never fit inside a
+    one-byte fence and narrow writes were unreachable. The keep-mask is what
+    makes them safe instead, so this asserts the neighbouring bytes survive.
+    """
     probe = FakeProbe()
+    seed(probe, 0x20001800, 0xAABBCCDD)
     out = []
     q = queue.Queue()
     q.put(req(address="0x20001801", size=1, value="0x1"))
-    live_write.drain(q, probe, 0x20001801, 0x20001900, out.append)   # base not word-aligned
+    live_write.drain(q, probe, out.append)   # base not word-aligned
+    assert out[0]["ok"] is True
+    # little-endian 0xAABBCCDD with byte 1 set to 0x01; the other three
+    # bytes are the neighbours the keep-mask has to preserve.
+    assert probe._target.mem[0x20001800] == 0xAABB01DD
+
+
+def test_a_write_that_does_not_fit_its_own_declared_symbol_is_refused():
+    """The replacement check: the write has to fit the extent the host declared."""
+    probe = FakeProbe()
+    out = []
+    q = queue.Queue()
+    # Claims a 1-byte symbol at 0x20001801, then writes 4 bytes at it.
+    q.put(req(address="0x20001801", size=4, value="0x1",
+              base="0x20001801", symbolSize=1))
+    live_write.drain(q, probe, out.append)
     assert out[0]["ok"] is False
-    assert "0x20001800" in out[0]["error"]      # the word that would have been written
+    assert "does not fit" in out[0]["error"]
     assert probe._target.writes == 0
     assert probe._target.calls == []
 
@@ -311,8 +341,8 @@ ENCODER_OUTPUT = [
 def test_encoder_output_is_accepted_and_fits_its_width(label, size, value):
     req = live_write.parse_request(
         {"id": "w1", "op": "write", "address": BASE + 4, "size": size,
-         "value": str(value)},
-        BASE, END)
+         "value": str(value), "base": BASE + 4, "symbolSize": size},
+        BASE + 4, size)
     assert req["value"] == value, label
     assert 0 <= req["value"] < (1 << (size * 8)), label
 
@@ -328,7 +358,7 @@ def test_bool_and_float_land_as_the_bits_the_user_asked_for():
     for addr, size, value in ((BASE + 4, 1, 1), (BASE + 5, 4, 1065353216)):
         parsed = live_write.parse_request(
             {"id": "w", "op": "write", "address": addr, "size": size,
-             "value": str(value)}, BASE, END)
+             "value": str(value), "base": addr, "symbolSize": size}, addr, size)
         live_write.write_member(target, parsed["address"], parsed["size"],
                                 parsed["value"])
     w0 = target.read32(BASE + 4)

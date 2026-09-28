@@ -460,14 +460,6 @@ class PyocdProbe:
             pass
 
 
-def load_range(resolution_path):
-    """The DebugGlobal window the write channel is fenced inside."""
-    with open(resolution_path, encoding="utf-8") as f:
-        res = json.load(f)
-    base = int(res["base"], 16)
-    return base, base + int(res["size"])
-
-
 def member_size(raw):
     """The declared byte width of a watch entry, or None when unusable.
 
@@ -595,7 +587,7 @@ def default_stamp():
 
 
 def poll_loop(probe, watch, out_path, hz=10, seconds=300, clock=None, sleeper=None,
-              stamp=None, write_queue=None, write_range=None, emit_write=None,
+              stamp=None, write_queue=None, emit_write=None,
               open_stream=None):
     """Run the poll loop. Returns (tracker, guard). Test-injectable clock."""
     clock = clock or time.monotonic
@@ -664,11 +656,12 @@ def poll_loop(probe, watch, out_path, hz=10, seconds=300, clock=None, sleeper=No
         f.flush()
         while clock() < deadline:
             tick_start = clock()
-            if write_queue is not None and write_range is not None:
+            if write_queue is not None:
                 # Writes run here, not on the stdin thread, so every access to
-                # the pyOCD target stays on this one thread.
-                live_write.drain(write_queue, probe, write_range[0],
-                                 write_range[1], emit_write or (lambda _r: None))
+                # the pyOCD target stays on this one thread. Each request
+                # carries the extent the host resolved for its own target;
+                # there is no shared DebugGlobal fence to pass in.
+                live_write.drain(write_queue, probe, emit_write or (lambda _r: None))
             # One block transfer per group of leaves, then each member's own bytes
             # are sliced out of the words that covered it.
             cache = {}
@@ -744,15 +737,14 @@ def main(argv=None):
             print("pyocd install failed; continuing with --mock only if given.")
 
     watch, skipped = load_watchlist(args.resolution)
-    write_range = load_range(args.resolution)
     write_queue = queue.Queue()
     live_write.start_stdin_reader(write_queue)
 
     def emit_write(result):
         print(live_write.RESULT_PREFIX + json.dumps(result), flush=True)
 
-    print(f"write channel: stdin JSON -> DebugGlobal "
-          f"[0x{write_range[0]:x}, 0x{write_range[1]:x})")
+    print("write channel: stdin JSON -> any resolved symbol "
+          "(extent travels with each request)")
     extra_entries = []
     for item in args.extra:
         entry, error = parse_extra(item)
@@ -788,8 +780,7 @@ def main(argv=None):
 
     def run_once(p):
         return poll_loop(p, watch, args.out, hz=args.hz, seconds=args.seconds,
-                         write_queue=write_queue, write_range=write_range,
-                         emit_write=emit_write)
+                         write_queue=write_queue, emit_write=emit_write)
 
     try:
         try:

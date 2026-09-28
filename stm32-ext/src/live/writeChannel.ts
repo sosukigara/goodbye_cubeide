@@ -1,4 +1,4 @@
-// Host side of the DebugGlobal write channel. The sidecar owns the single
+// Host side of the memory write channel. The sidecar owns the single
 // pyOCD session, so requests go to it over stdin and results come back on
 // stdout as `WRITE-RESULT {json}`. Pure string/JSON handling — no vscode —
 // so the round trip is unit-testable.
@@ -16,14 +16,24 @@ export interface WriteResult {
   readonly note?: string | undefined;
 }
 
-/** One stdin line. The sidecar re-validates the range before the write. */
+/**
+ * One stdin line.
+ *
+ * `symbolBase`/`symbolSize` are the extent the host resolved for the target.
+ * They travel with the request so the sidecar can re-check the write against
+ * the host's own claim — it is a separate process, and this is the one thing
+ * that still stands between a request and the bus now that the write is not
+ * confined to DebugGlobal.
+ */
 export function buildWriteRequest(
   id: string,
   address: string,
   size: number,
   value: string,
+  symbolBase: string,
+  symbolSize: number,
 ): string {
-  return JSON.stringify({ id, op: "write", address, size, value });
+  return JSON.stringify({ id, op: "write", address, size, value, base: symbolBase, symbolSize });
 }
 
 /** Parse a sidecar stdout line; null for anything that is not a result. */

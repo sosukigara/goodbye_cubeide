@@ -279,9 +279,3 @@ export function findSymbol(
   return res.symbols.find((s) => s.name === name);
 }
 
-/** Base address range of the DebugGlobal instance (allowlist root). */
-export function debugRange(res: ElfResolution): { base: number; end: number } {
-  const base = parseHex(res.base) as number;
-  const end = parseHex(res.end) as number;
-  return { base, end };
-}

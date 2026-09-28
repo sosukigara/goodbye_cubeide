@@ -5,6 +5,7 @@ import {
   extraArgs,
   isProbeBusyOutput,
   parseNmSymbol,
+  parseNmSymbolSize,
   readNewSamples,
   readSessionLock,
   resolveWatchlist,
@@ -63,10 +64,41 @@ describe("live session manager contracts", () => {
     const r2 = readNewSamples("timestamp,address,name,value\nt1,0x1,a,0x2\nt2,0x3,b,0x4\n", r.nextLine);
     expect(r2.samples.map((s) => s.name)).toEqual(["b"]);
   });
-  it("parseNmSymbol finds defined globals", () => {
-    const nm = "20000008 D tuner_params\n200000bc D debug\n         U puts\n";
-    expect(parseNmSymbol(nm, "tuner_params")).toBe("0x20000008");
+  it("parseNmSymbol finds defined globals in REAL nm -S output", () => {
+    // Captured from `arm-none-eabi-nm -S --defined-only` on a cortex-m4
+    // object. `-S` puts a size on every defined symbol, so the four-field
+    // form is the only one a real tool emits — and a parser written against
+    // the three-field shape matched nothing, returning undefined for every
+    // real ELF while this test stayed green on a fixture no tool produces.
+    const nm = [
+      "00000000 00000001 B bss_byte",
+      "00000008 00000004 B bss_dword",
+      "0000000c 00000010 B sized_arr",
+      "00000000 00000014 T main",
+      "         U puts",
+    ].join("\n");
+    expect(parseNmSymbol(nm, "bss_dword")).toBe("0x00000008");
+    expect(parseNmSymbol(nm, "sized_arr")).toBe("0x0000000c");
+    expect(parseNmSymbol(nm, "main")).toBe("0x00000000");
+    // Undefined symbols are excluded by --defined-only, but a stray one in
+    // the stream must still not be picked up.
+    expect(parseNmSymbol(nm, "puts")).toBeUndefined();
     expect(parseNmSymbol(nm, "nope")).toBeUndefined();
+  });
+
+  it("parseNmSymbolSize also yields the width, for the write path", () => {
+    const nm = "00000008 00000004 B bss_dword\n0000000c 00000010 B sized_arr\n";
+    expect(parseNmSymbolSize(nm, "bss_dword")).toEqual({ address: "0x00000008", size: 4 });
+    expect(parseNmSymbolSize(nm, "sized_arr")).toEqual({ address: "0x0000000c", size: 16 });
+  });
+
+  it("refuses a symbol whose width it cannot read, rather than guessing", () => {
+    // Guessing a write width from the type letter would mean writing 1 byte
+    // into a 4-byte variable, or 4 bytes over a 16-bit one. No width, no write.
+    const nm = "20000008 D tuner_params\n";
+    expect(parseNmSymbolSize(nm, "tuner_params")).toBeUndefined();
+    // The address is still usable for watching, which needs no width.
+    expect(parseNmSymbol(nm, "tuner_params")).toBe("0x20000008");
   });
   it("resolveWatchlist splits resolved/nm/unresolved", () => {    const r = resolveWatchlist(
       ["sys.loop_hz", "tuner_params", "ghost", "sys.loop_hz"],

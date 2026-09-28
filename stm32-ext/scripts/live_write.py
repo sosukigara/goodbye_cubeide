@@ -1,17 +1,24 @@
 #!/usr/bin/env python3
-"""DebugGlobal-only memory write channel for the live sidecar.
+"""Memory write channel for the live sidecar.
 
 The poll loop owns the single pyOCD session, so a second connection would
 contend for the ST-LINK. Requests therefore arrive on stdin as JSON lines
 and are executed *by the poll loop itself* (one tick of latency) — that
 keeps every target access single-threaded and avoids locking the probe.
 
-Defense in depth: the host re-checks the DebugGlobal range before asking,
-and this module re-checks it again before touching the bus. A request
-outside the range is refused here even if the host were wrong. The fence
-covers the whole 32-bit word a read-modify-write needs, not just the
-member, so a narrow member never causes a word outside the struct to be
-written back.
+Defense in depth: the host resolves the target and declares its extent
+(`base` / `symbolSize`) with the request, and this module re-checks that the
+write fits inside it before touching the bus. That is the check that remains
+now that the write is not confined to DebugGlobal: the sidecar is a separate
+process, so it catches a request that does not match the symbol the host said
+it was writing.
+
+There is deliberately no check that the read-modify-write's 32-bit words stay
+inside the extent. With a fence one symbol wide, every 1- or 2-byte member
+straddles it — a byte at base occupies [base, base+4), so word_end > base+1
+always — and the check would refuse every narrow write. The neighbouring bytes
+in the covering word are preserved by the keep-mask in write_member instead,
+and apply_write reads the member back to confirm the value landed.
 
 Every bus transaction is a 32-bit word read or write. pyOCD's AHB-AP raises
 DebugError("unsupported transfer size") for 8/16/64-bit accesses
@@ -27,7 +34,9 @@ import threading
 
 RESULT_PREFIX = "WRITE-RESULT "
 
-# Addresses inside [base, end) of the resolved DebugGlobal, and no others.
+# The width must be one the bus driver can move. The ADDRESS is no longer
+# confined to DebugGlobal: the host sends the extent of the symbol it resolved
+# and the write has to fit inside THAT (see parse_request).
 _ALLOWED_WIDTHS = (1, 2, 4, 8)
 
 # The one AHB-AP transfer size a Cortex-M target implements (see the docstring).
@@ -68,8 +77,23 @@ def word_span(address, size):
     return word_base, byte_offset, word_count
 
 
-def parse_request(raw, base, end):
-    """Validate one request object. Raises WriteRequestError on refusal."""
+def parse_request(raw, base, size_of_symbol):
+    """Validate one request object. Raises WriteRequestError on refusal.
+
+    `base`/`size_of_symbol` are the extent the HOST resolved for the target,
+    and the request has to fit inside them. Re-checking the host's own claim
+    here is the point: the sidecar is a separate process, so this catches a
+    request that does not correspond to the symbol the host said it was
+    writing — which is what a buggy or hostile host would send.
+
+    There is no longer a check that the read-modify-write's 32-bit words stay
+    inside the fence, and that is deliberate. With a fence one symbol wide,
+    EVERY 1- or 2-byte member straddles it: a byte at base occupies the word
+    [base, base+4), so word_end > base+1 always, and the check would refuse
+    every narrow write. The neighbouring bytes in that word are not clobbered
+    because write_member preserves them with an explicit keep-mask, and
+    apply_write reads the member back to confirm the value landed.
+    """
     if not isinstance(raw, dict):
         raise WriteRequestError("not an object")
     req_id = raw.get("id")
@@ -84,23 +108,15 @@ def parse_request(raw, base, end):
             f"bad size: {size!r} (a member must be "
             f"{' or '.join(str(w) for w in _ALLOWED_WIDTHS)} bytes)")
     value = _parse_int(raw.get("value"), "value")
-    span = size
-    if not (base <= address and address + span <= end):
+    if size_of_symbol <= 0:
+        raise WriteRequestError(f"symbol extent {size_of_symbol} is not a size")
+    if not (base <= address and address + size <= base + size_of_symbol):
         raise WriteRequestError(
-            f"address 0x{address:x} outside DebugGlobal "
-            f"[0x{base:x}, 0x{end:x})")
+            f"address 0x{address:x}+{size} does not fit the declared symbol "
+            f"[0x{base:x}, 0x{base + size_of_symbol:x})")
     bits = size * 8
     if not 0 <= value < (1 << bits):
         raise WriteRequestError(f"value {value} does not fit in {bits} bits")
-    # The bus only moves whole words, so the fence has to hold for the words the
-    # read-modify-write will touch, not just for the member inside them.
-    word_base, _, word_count = word_span(address, size)
-    word_end = word_base + word_count * WORD_BYTES
-    if word_base < base or word_end > end:
-        raise WriteRequestError(
-            f"address 0x{address:x} ({size} bytes) is written as the word "
-            f"[0x{word_base:x}, 0x{word_end:x}), which leaves DebugGlobal "
-            f"[0x{base:x}, 0x{end:x}); refusing rather than writing outside the fence")
     return {"id": req_id, "address": address, "size": size, "value": value}
 
 
@@ -172,15 +188,21 @@ def start_stdin_reader(requests, stream=None):
     return t
 
 
-def drain(requests, probe, base, end, emit):
-    """Run every queued request. Called from the poll loop. Never raises."""
+def drain(requests, probe, emit):
+    """Run every queued request. Called from the poll loop. Never raises.
+
+    No fence is threaded in any more: each request carries the extent the
+    host resolved for its own target, and parse_request checks the write
+    against that.
+    """
     while True:
         try:
             raw = requests.get_nowait()
         except queue.Empty:
             return
         try:
-            req = parse_request(raw, base, end)
+            req = parse_request(raw, _parse_int(raw.get("base"), "base"),
+                                _parse_int(raw.get("symbolSize"), "symbolSize"))
             result = apply_write(probe, req)
             if not result["ok"]:
                 result["error"] = f"readback mismatch: {result['readback']}"
