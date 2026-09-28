@@ -2,7 +2,7 @@
   "name": "stm32-ext",
   "displayName": "STM32 Extension (goodbye_cubeide)",
   "description": "Build, flash, and live-monitor generic STM32 projects from VSCode: Ninja+ccache builds, one-click CubeProgrammer flash with verify, up-to-200Hz live variables with graph + CSV. Native VSCode UI, 6 fixed panels.",
-  "version": "1.7.4",
+  "version": "1.7.5",
   "publisher": "goodbye-cubeide",
   "author": "so sukigara",
   "license": "MIT",

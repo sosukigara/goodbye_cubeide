@@ -4,7 +4,7 @@
 import { spawn } from "node:child_process";
 import { statSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, join, resolve } from "node:path";
+import { delimiter, extname, join, resolve } from "node:path";
 
 export type DiagnosticKind = "error" | "warning" | "note";
 
@@ -218,8 +218,20 @@ export interface ToolResolution {
  * Locate an executable, looking past a PATH that a GUI session may have
  * truncated. `ninja` and `pyocd` both land in ~/.local/bin, which is absent
  * from /etc/environment, so a desktop-launched VS Code cannot spawn them.
+ *
+ * On Windows the binary is `ninja.exe`, `arm-none-eabi-gcc.exe`, `python.exe`.
+ * Stat'ing the bare name therefore never matches, which made the first-run
+ * preflight report a tool as missing on a machine that has it installed —
+ * and, because the flag is only cleared once the environment is complete,
+ * the notice would reappear on every single launch with no way out. The
+ * `.exe` form is tried as well, behind the same injection point the tests
+ * already use, so POSIX behaviour is provably unchanged.
  */
-export function resolveTool(name: string, env: NodeJS.ProcessEnv = process.env): ToolResolution {
+export function resolveTool(
+  name: string,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): ToolResolution {
   const searched: string[] = [];
   if (name.includes("/")) {
     searched.push(name);
@@ -229,14 +241,20 @@ export function resolveTool(name: string, env: NodeJS.ProcessEnv = process.env):
     ...(env["PATH"] ?? "").split(delimiter),
     ...EXTRA_TOOL_DIRS,
   ];
+  // A name that already carries an extension is not given another one.
+  const candidates = extname(name) === ""
+    ? (platform === "win32" ? [name, `${name}.exe`] : [name])
+    : [name];
   for (const dir of dirs) {
     if (dir === "") {
       continue;
     }
-    const full = join(dir, name);
-    searched.push(full);
-    if (isExecutableFile(full)) {
-      return { path: full, searched, found: true };
+    for (const candidate of candidates) {
+      const full = join(dir, candidate);
+      searched.push(full);
+      if (isExecutableFile(full)) {
+        return { path: full, searched, found: true };
+      }
     }
   }
   return { path: name, searched, found: false };

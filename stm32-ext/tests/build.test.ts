@@ -333,5 +333,42 @@ describe("toolchain lookup", () => {
     const r = resolveTool("/nope/ninja", { PATH: "/usr/bin:/bin" });
     expect(r.found).toBe(false);
   });
+
+  it("finds ninja.exe on win32, where the binary carries an extension", () => {
+    // The first-run preflight reports a tool as missing when this returns
+    // false, and the notice only clears once everything resolves — so a
+    // permanent false here means the warning reappears on EVERY launch, with
+    // install instructions that cannot possibly help.
+    const dir = mkdtempSync(join(tmpdir(), "stm32ext-win-"));
+    writeFileSync(join(dir, "ninja.exe"), "");
+    const win = resolveTool("ninja", { PATH: dir }, "win32");
+    expect(win.found).toBe(true);
+    expect(win.path).toBe(join(dir, "ninja.exe"));
+    // The bare name is still tried first, so a POSIX-style install on Windows
+    // (git bash, WSL shims) keeps working.
+    expect(win.searched[0]).toBe(join(dir, "ninja"));
+  });
+
+  it("does not append .exe on posix, so linux lookups are unchanged", () => {
+    // A name that exists nowhere else: resolveTool always also searches
+    // ~/.local/bin, and a real ninja lives there on this machine, which would
+    // mask what this is actually asserting.
+    const dir = mkdtempSync(join(tmpdir(), "stm32ext-nix-"));
+    writeFileSync(join(dir, "stm32ext-absent-tool.exe"), "");
+    // Only the .exe exists: on linux this must NOT be found, or a stray file
+    // would satisfy the check and then fail to spawn.
+    const r = resolveTool("stm32ext-absent-tool", { PATH: dir }, "linux");
+    expect(r.found).toBe(false);
+    // ...and the .exe was never even considered.
+    expect(r.searched.some((p) => p.endsWith(".exe"))).toBe(false);
+  });
+
+  it("does not double the extension when the name already has one", () => {
+    const dir = mkdtempSync(join(tmpdir(), "stm32ext-ext-"));
+    writeFileSync(join(dir, "pyocd.exe"), "");
+    const r = resolveTool("pyocd.exe", { PATH: dir }, "win32");
+    expect(r.found).toBe(true);
+    expect(r.searched.some((p) => p.endsWith("pyocd.exe.exe"))).toBe(false);
+  });
 });
 
