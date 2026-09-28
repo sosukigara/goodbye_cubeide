@@ -2417,7 +2417,12 @@ export function describeMissingTools(
  */
 export function firstRunMessage(blockers: readonly ToolRequirement[]): string {
   const names = blockers.map((m) => m.name).join(", ");
-  return `STM32: 必須ツールが未導入です (${names}) — 導入手順を確認してください`;
+  // The list can mix a missing required tool with a missing optional one —
+  // pyelftools is judged by import and is not required — so calling the whole
+  // list "必須ツール" would misdescribe an optional gap as a blocked install.
+  const allRequired = blockers.every((b) => b.required);
+  const label = allRequired ? "必須ツールが未導入です" : "ツールが未導入です";
+  return `STM32: ${label} (${names}) — 導入手順を確認してください`;
 }
 
 /** STM32: 診断 — ツールチェーン・設定・競合をまとめて点検します。 */
@@ -2743,6 +2748,7 @@ async function runSetup(
     channel.appendLine(`[setup] 自動導入後も不足: ${leftNames.join(", ")}`);
     showMissingTools(
       context,
+
       leftNames.map((n) => TOOL_REQUIREMENTS.find((r) => r.name === n)).filter(
         (r): r is ToolRequirement => r !== undefined,
       ),

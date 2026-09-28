@@ -161,3 +161,23 @@ describe("setup: the synchronous probe must not misjudge import-only tools", () 
     expect(r.missing.map((m) => m.name)).not.toContain("pyelftools");
   });
 });
+
+  it("does not call an optional gap a required one", () => {
+    const opt = (name: string): ToolRequirement => ({
+      name, needed: "用途", install: "pip install x", required: false,
+    });
+    // pyelftools is not required and is judged by import, but it can be the
+    // only thing left after setup runs. Calling that "必須ツールが未導入"
+    // would tell the user their install is blocked when it is not.
+    const msg = firstRunMessage([opt("pyelftools")]);
+    expect(msg).toContain("pyelftools");
+    expect(msg).toContain("ツールが未導入です");
+    expect(msg).not.toContain("必須ツールが未導入です");
+  });
+
+  it("still says required when every tool in the list is required", () => {
+    const need = (name: string): ToolRequirement => ({
+      name, needed: "用途", install: "apt install x", required: true,
+    });
+    expect(firstRunMessage([need("ninja"), need("python3")])).toContain("必須ツールが未導入です");
+  });
