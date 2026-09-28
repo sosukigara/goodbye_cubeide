@@ -8,6 +8,12 @@ build-ext/
 # Dependencies
 node_modules/
 
+# Python bytecode. These were tracked, so every pytest run rewrote them and
+# `git status` could never be clean — which defeats the one check that proves
+# a fresh clone reproduces.
+__pycache__/
+*.pyc
+
 # Session/agent scratch: logs, snapshots, transcripts
 .omo/
 .agents/
