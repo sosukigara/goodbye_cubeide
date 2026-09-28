@@ -291,7 +291,11 @@ describe("P0-3: the webview is written once and then only messaged", () => {
 
   it("sends live-bootstrap as the single initial state transfer", () => {
     expect(extensionSource).toContain("kind: \"live-bootstrap\"");
-    expect(extensionSource).toContain("renderSidebar(this.sidebarState())");
+    // The render wiring itself is asserted by the test above (every
+    // webview.html assignment is renderSidebar/graphPanelHtml). Pinning the
+    // exact argument list here only re-asserted that with a string that
+    // breaks whenever the call legitimately gains an argument — the sidebar
+    // now takes the configured font size.
   });
 });
 

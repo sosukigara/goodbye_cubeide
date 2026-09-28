@@ -78,8 +78,9 @@ webview の HTML は起動時に 1 度だけ設定され、以降はメッセー
 | `stm32ext.interface` | `SWD` / `JTAG` | `SWD` | デバッグインターフェース（CubeProgrammer 経路の `port=` になる） |
 | `stm32ext.resetMode` | `connect-under-reset` / `software-reset` / `hardware-reset` / `core-reset` / `none` | `connect-under-reset` | リセット戦略。pyOCD では `connect-under-reset` → `--connect under-reset`、`none` → `--no-reset` |
 | `stm32ext.pollHz` | number, 1–200 | `100` | Live のポーリング周波数 |
+| `stm32ext.uiFontPx` | number, 12–22 | `15` | サイドバーの基本文字サイズ(px)。操作ボタンのタップ領域と値列/操作列の幅はこれに追従します。変更後は `Developer: Reload Window`（または再起動）が必要です。サイドバーの HTML は 1 度だけ生成されるためです |
 
-`probe` / `interface` / `resetMode` / `pollHz` のいずれかが未設定なら、書き込みも監視も開始せずどの操作も行いません。
+`probe` / `interface` / `resetMode` / `pollHz` のいずれかが未設定なら、書き込みも監視も開始せずどの操作も行いません。`uiFontPx` は既定値を持つ表示設定なので、この必須設定の検査には含まれません。
 
 ## コマンド
 

@@ -2095,7 +2095,11 @@ class SidebarProvider implements vscode.WebviewViewProvider {
     this.deps.livePanel.setDropSink((summary) => { this.liveDrop = summary; });
     view.webview.onDidReceiveMessage((raw: unknown) => { void this.onMessage(raw); });
     // The one and only HTML assignment in the product.
-    this.view.webview.html = renderSidebar(this.sidebarState());
+    // The font size is read here rather than through readSettings(): that
+    // function is a required-settings gate that blocks every operation, and
+    // a presentation preference with a default must never be able to do that.
+    const uiFontPx = vscode.workspace.getConfiguration("stm32ext").get<number>("uiFontPx", 15);
+    this.view.webview.html = renderSidebar(this.sidebarState(), uiFontPx);
     this.deps.livePanel.replayTo(view.webview);
   }
   private post(msg: unknown): void {

@@ -8,9 +8,44 @@ import {
   parseSidebarMessage,
   SIDEBAR_SCRIPT,
   SIDEBAR_PANEL_DEFAULT_STATE,
-  SIDEBAR_BULK_ADD_CAP,
   type SidebarState,
 } from "../src/panels/sidebar.js";
+
+describe("sidebar: font size is a user setting, and the columns follow it", () => {
+  it("injects the configured size as a CSS variable", () => {
+    expect(renderSidebar(undefined as never, 18)).toContain("--stm32ext-ui-font:18px");
+    expect(renderSidebar(undefined as never, 12)).toContain("--stm32ext-ui-font:12px");
+  });
+
+  it("clamps a nonsensical setting instead of emitting broken CSS", () => {
+    // A raw value would otherwise become `--stm32ext-ui-font:NaNpx`, which
+    // silently invalidates every width derived from it. Out-of-range numbers
+    // clamp to the bounds; a non-finite one falls back to the default.
+    expect(renderSidebar(undefined as never, 0)).toContain("--stm32ext-ui-font:12px");
+    expect(renderSidebar(undefined as never, 999)).toContain("--stm32ext-ui-font:22px");
+    expect(renderSidebar(undefined as never, Number.NaN)).toContain("--stm32ext-ui-font:15px");
+    for (const bad of [0, 999, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(renderSidebar(undefined as never, bad)).not.toContain("NaN");
+    }
+  });
+
+  it("sizes the value and op columns from that variable, not a fixed px", () => {
+    // A hardcoded px width is correct for exactly one font size and silently
+    // ellipsises a hex value or clips the rightmost button at any other. The
+    // width must be an absolute calc over the injected size.
+    const css = renderSidebar(undefined as never, 15);
+    expect(css).toMatch(/--valw:calc\(var\(--stm32ext-ui-font/);
+    expect(css).toMatch(/--opw:calc\(var\(--stm32ext-ui-font/);
+    expect(css).not.toMatch(/td\.v\{width:\d+px/);
+    expect(css).not.toMatch(/td\.o\{width:\d+px/);
+    // th and td must consume the SAME variable, or table-layout:fixed (which
+    // takes the <thead> value) silently wins with the wrong one.
+    expect(css).toMatch(/th:nth-child\(2\)\{width:var\(--valw\)\}/);
+    expect(css).toMatch(/td\.v\{width:var\(--valw\)/);
+    expect(css).toMatch(/th:nth-child\(3\)\{width:var\(--opw\)\}/);
+    expect(css).toMatch(/td\.o\{width:var\(--opw\)/);
+  });
+});
 
 // --------------------------------------------------------------- DOM stub
 class StubText {
