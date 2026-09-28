@@ -1,0 +1,192 @@
+{
+  "name": "stm32-ext",
+  "displayName": "STM32 Extension (goodbye_cubeide)",
+  "description": "Build, flash, and live-monitor generic STM32 projects from VSCode: Ninja+ccache builds, one-click CubeProgrammer flash with verify, up-to-200Hz live variables with graph + CSV. Native VSCode UI, 6 fixed panels.",
+  "version": "1.7.0",
+  "publisher": "goodbye-cubeide",
+  "author": "so sukigara",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://example.com/goodbye-cubeide/stm32-ext.git"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Debuggers",
+    "Other"
+  ],
+  "keywords": [
+    "stm32",
+    "embedded",
+    "cortex-m",
+    "cubeprogrammer",
+    "st-link",
+    "live-watch",
+    "ninja"
+  ],
+  "activationEvents": [
+    "onView:stm32ext-project",
+    "onView:stm32ext-build",
+    "onView:stm32ext-flash",
+    "onView:stm32ext-live",
+    "onView:stm32ext-graph",
+    "onView:stm32ext-log",
+    "onCommand:stm32ext.showProject",
+    "onCommand:stm32ext.showBuild",
+    "onCommand:stm32ext.showFlash",
+    "onCommand:stm32ext.showLive",
+    "onCommand:stm32ext.showGraph",
+    "onCommand:stm32ext.showLog",
+    "onCommand:stm32ext.flash",
+    "onCommand:stm32ext.buildAndFlash",
+    "onCommand:stm32ext.selectProject",
+    "onCommand:stm32ext.diagnose",
+    "onCommand:stm32ext.build",
+    "onCommand:stm32ext.openBuildDiag"
+  ],
+  "main": "./out/extension.js",
+  "scripts": {
+    "compile": "tsc -p ./",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "package": "npm run compile && vsce package --no-yarn",
+    "gen:ninja": "node out/build/cli.js",
+    "parity": "python3 scripts/parity-check.py"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "stm32ext.showProject",
+        "title": "STM32: プロジェクトパネルを表示"
+      },
+      {
+        "command": "stm32ext.showBuild",
+        "title": "STM32: ビルドパネルを表示"
+      },
+      {
+        "command": "stm32ext.showFlash",
+        "title": "STM32: 書き込みパネルを表示"
+      },
+      {
+        "command": "stm32ext.showLive",
+        "title": "STM32: 監視変数パネルを表示"
+      },
+      {
+        "command": "stm32ext.showGraph",
+        "title": "STM32: グラフパネルを開く"
+      },
+      {
+        "command": "stm32ext.showLog",
+        "title": "STM32: ログパネルを表示"
+      },
+      {
+        "command": "stm32ext.flash",
+        "title": "STM32: ELF を書き込む (確認 + 検証)"
+      },
+      {
+        "command": "stm32ext.buildAndFlash",
+        "title": "STM32: ビルドしてから書き込む (ELF 自動選択・確認 + 検証)"
+      },
+      {
+        "command": "stm32ext.selectProject",
+        "title": "STM32: 対象プロジェクトを選択"
+      },
+      {
+        "command": "stm32ext.diagnose",
+        "title": "STM32: 診断 (CubeIDE / CLI / 設定)"
+      },
+      {
+        "command": "stm32ext.build",
+        "title": "STM32: ビルド (Ninja + ccache)"
+      },
+      {
+        "command": "stm32ext.openBuildDiag",
+        "title": "STM32: ビルドエラーの位置を開く"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "stm32ext",
+          "title": "STM32",
+          "icon": "resources/stm32.svg"
+        }
+      ]
+    },
+    "views": {
+      "stm32ext": [
+        {
+          "id": "stm32ext-sidebar",
+          "name": "STM32",
+          "type": "webview"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "STM32 Extension",
+      "properties": {
+        "stm32ext.flashTool": {
+          "type": "string",
+          "enum": [
+            "pyocd",
+            "cubeprogr"
+          ],
+          "default": "pyocd",
+          "description": "書き込みツール。pyocd (推奨) は live 監視と同じライブラリで追加インストール不要。cubeprogr は STM32CubeProgrammer_CLI を使用。"
+        },
+        "stm32ext.cliPath": {
+          "type": "string",
+          "default": "STM32_Programmer_CLI",
+          "description": "Path to STM32CubeProgrammer CLI (STM32_Programmer_CLI). flashTool=cubeprogr のときのみ使用。"
+        },
+        "stm32ext.probe": {
+          "type": "string",
+          "enum": [
+            "ST-LINK",
+            "J-LINK"
+          ],
+          "default": "ST-LINK",
+          "description": "Debug probe type. Default ST-LINK (launch: stlink, swd_mode=true)."
+        },
+        "stm32ext.interface": {
+          "type": "string",
+          "enum": [
+            "SWD",
+            "JTAG"
+          ],
+          "default": "SWD",
+          "description": "Debug interface. Default SWD."
+        },
+        "stm32ext.resetMode": {
+          "type": "string",
+          "enum": [
+            "connect-under-reset",
+            "software-reset",
+            "hardware-reset",
+            "core-reset",
+            "none"
+          ],
+          "default": "connect-under-reset",
+          "description": "Reset strategy. Default connect-under-reset (launch reset_strategy)."
+        },
+        "stm32ext.pollHz": {
+          "type": "number",
+          "default": 100,
+          "minimum": 1,
+          "maximum": 200,
+          "description": "Live polling rate in Hz. Default 100Hz, up to 200Hz (G8/G12)."
+        }
+      }
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^2.24.0",
+    "typescript": "^5.4.0",
+    "vitest": "^2.1.8"
+  }
+}

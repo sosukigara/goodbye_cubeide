@@ -1,0 +1,3 @@
+write channel: stdin JSON -> DebugGlobal [0x200000b4, 0x20000484)
+live_poll: 9 leaves @ 100.0Hz, span 204B: block read 4 word-aligned 4B leaves in one 52-word transaction, 5 read individually, 0 re-read for tears
+mock done: ticks=495 collected=495 dropped=0 drop_rate=0.0000% (budget: <1% required), tears=0 of 0 double-reads, sample_fail=0.0000%

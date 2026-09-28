@@ -1,0 +1,27 @@
+# Build output — regenerate with `npm run compile`
+out/
+build-ext/
+*.o
+*.elf
+*.map
+
+# Dependencies
+node_modules/
+
+# Session/agent scratch: logs, snapshots, transcripts
+.omo/
+.agents/
+*.tgz
+
+# Local live-session artifacts written next to the ELF
+live.csv
+live-resolution.json
+live-session.log
+stm32-graph.csv
+
+# Packaged extension output
+*.vsix
+
+# Editor / OS
+.DS_Store
+*.swp

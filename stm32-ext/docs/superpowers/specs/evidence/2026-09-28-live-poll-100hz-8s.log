@@ -1,0 +1,5 @@
+write channel: stdin JSON -> DebugGlobal [0x200000b4, 0x20000484)
+watch: 10 symbols @ 100.0Hz, no-halt, single-read (atomic word)
+live_poll: target was halted (e.g. post-flash); resumed for live reads
+live_poll: read mode=block (addrs=10, span=360B)
+done: ticks=790 collected=787 dropped=3 drop_rate=0.3797% (budget: <1% required), tears=0, sample_fail=0.0000%
