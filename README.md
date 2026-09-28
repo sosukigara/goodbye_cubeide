@@ -15,7 +15,7 @@ STM32CubeIDE を使わずに、VSCode だけで STM32 ファームウェアを *
 |---|---|
 | **ビルド** | `.cproject` から `build-ext/build.ninja` を生成して `ninja` を実行。`ccache` 経由、進捗バーと Problems 連携つき |
 | **書き込み** | 確認ダイアログ → 検証付き書き込み。`pyOCD` か `STM32_Programmer_CLI` のどちらでも |
-| **変数監視** | `DebugGlobal` の葉を DWARF の型解釈付きで 100Hz 監視。bool / float / enum / 符号付き / bitfield / string |
+| **変数監視** | `DebugGlobal` の葉を DWARF の型解釈付きで監視（既定 100Hz、最大 200Hz）。bool / float / enum / 符号付き / bitfield / string |
 | **グラフ** | エディタ領域に開く実パネル。時間窓 1〜60 秒、系列ごとの min/max/enum 名表示、CSV 出力 |
 | **値の書込** | 1/2/4/8 バイト幅。`DebugGlobal` の範囲内のみ、毎回 modal 確認と監査ログつき |
 | **CSV** | 監視セッションとグラフが同じ 4 列スキーマ（`timestamp,address,name,value`）で出力 |
