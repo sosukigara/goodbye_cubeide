@@ -2,7 +2,7 @@
   "name": "stm32-ext",
   "displayName": "STM32 Extension (goodbye_cubeide)",
   "description": "Build, flash, and live-monitor generic STM32 projects from VSCode: Ninja+ccache builds, one-click CubeProgrammer flash with verify, up-to-200Hz live variables with graph + CSV. Native VSCode UI, 6 fixed panels.",
-  "version": "1.7.11",
+  "version": "1.7.12",
   "publisher": "goodbye-cubeide",
   "author": "so sukigara",
   "license": "MIT",
@@ -190,7 +190,7 @@
           "type": "number",
           "default": 15,
           "minimum": 12,
-          "maximum": 22,
+          "maximum": 20,
           "description": "サイドバーの基本文字サイズ(px)。値列と操作列はこの値に追従して切れません。変更後は Developer: Reload Window(または再起動)が必要です。サイドバーの HTML は 1 度だけ生成されるためです。"
          }
       }

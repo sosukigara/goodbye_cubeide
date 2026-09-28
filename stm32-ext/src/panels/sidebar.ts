@@ -193,7 +193,7 @@ export function renderSidebar(
   // emit `--stm32ext-ui-font:NaNpx` and silently invalidate every width
   // derived from it — the columns would collapse with no visible error.
   const fontPx = Number.isFinite(fontPxRaw)
-    ? Math.min(22, Math.max(12, Math.round(fontPxRaw)))
+    ? Math.min(20, Math.max(12, Math.round(fontPxRaw)))
     : 15;
   return `<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8">`
     + `<meta name="viewport" content="width=device-width, initial-scale=1.0">`

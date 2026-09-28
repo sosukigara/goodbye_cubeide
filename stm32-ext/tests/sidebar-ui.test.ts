@@ -3,6 +3,7 @@
 // here is observed DOM state, not a regex over source.
 import { describe, expect, it } from "vitest";
 import { Script, createContext } from "node:vm";
+import { readFileSync } from "node:fs";
 import {
   renderSidebar,
   parseSidebarMessage,
@@ -22,7 +23,7 @@ describe("sidebar: font size is a user setting, and the columns follow it", () =
     // silently invalidates every width derived from it. Out-of-range numbers
     // clamp to the bounds; a non-finite one falls back to the default.
     expect(renderSidebar(undefined as never, 0)).toContain("--stm32ext-ui-font:12px");
-    expect(renderSidebar(undefined as never, 999)).toContain("--stm32ext-ui-font:22px");
+    expect(renderSidebar(undefined as never, 999)).toContain("--stm32ext-ui-font:20px");
     expect(renderSidebar(undefined as never, Number.NaN)).toContain("--stm32ext-ui-font:15px");
     for (const bad of [0, 999, Number.NaN, Number.POSITIVE_INFINITY]) {
       expect(renderSidebar(undefined as never, bad)).not.toContain("NaN");
@@ -57,6 +58,27 @@ describe("sidebar: font size is a user setting, and the columns follow it", () =
     // No second font-size source may creep back into the body rule.
     expect(body?.[1]).not.toContain("max(");
     expect(body?.[1]).not.toContain("vscode-font-size");
+  });
+
+  it("caps at 20px, and the cap is the same number in the schema", () => {
+    // The name column is whatever the two fixed columns leave over, and both
+    // grow with the font: name = 284 - 11.2*font at a 300px sidebar. Measured
+    // in a real browser that is 13 monospace characters at the 15px default
+    // and only 5 at 20px — so the cap is a guard rail against a setting that
+    // leaves variable names unreadable, NOT a size that is pleasant to use.
+    // Raising it means re-measuring that, and the schema and the clamp must
+    // not drift apart while doing so.
+    const css = renderSidebar(SIDEBAR_PANEL_DEFAULT_STATE, 20);
+    expect(css).toContain("--stm32ext-ui-font:20px");
+    // Anything larger is pulled back to the same bound.
+    expect(renderSidebar(SIDEBAR_PANEL_DEFAULT_STATE, 22)).toContain("--stm32ext-ui-font:20px");
+    // ...and the Settings UI offers the same range the code enforces.
+    const pkg = JSON.parse(
+      readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+    );
+    const schema = pkg.contributes.configuration.properties["stm32ext.uiFontPx"];
+    expect(schema.minimum).toBe(12);
+    expect(schema.maximum).toBe(20);
   });
 });
 
