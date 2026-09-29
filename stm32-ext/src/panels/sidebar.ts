@@ -139,8 +139,9 @@ function liveSection(s: SidebarState): string {
     + `<div data-testid="live-write-result" role="status"></div>`
     + `<p class="warn" data-testid="live-unresolved">${s.unresolved.length > 0 ? `未解決 ${esc(s.unresolved.join(", "))}` : ""}</p>`
     + `<table class="live" data-testid="live-tree">`
-    + `<thead><tr><th class="n" scope="col">変数</th><th class="v" scope="col">値</th>`
-    + `<th class="o" scope="col">操作</th></tr></thead>`
+  + `<thead><tr><th class="n" scope="col">変数</th><th class="v" scope="col">値</th>`
+  + `<th class="w" scope="col">書込</th>`
+  + `<th class="o" scope="col">操作</th></tr></thead>`
     + `<tbody data-testid="live-rows"></tbody></table>`
     + `<p class="empty" data-testid="live-empty">監視する変数がありません</p>`;
 }
@@ -263,9 +264,10 @@ export const SIDEBAR_CSS = `<style>`
   //          spacing came from a trailing margin; with `gap` it is 5.2, and
   //          the cell no longer has hidden inline text to overflow.)
   // The name column is `auto` and absorbs the rest, ellipsising if it must.
-  + `table.live{--valw:calc(var(--stm32ext-ui-font,15px) * 6 + 8px);--opw:calc(var(--stm32ext-ui-font,15px) * 5.2 + 8px)}`
+  + `table.live{--valw:calc(var(--stm32ext-ui-font,15px) * 6 + 8px);--wrw:calc(var(--stm32ext-ui-font,15px) * 5.5 + 8px);--opw:calc(var(--stm32ext-ui-font,15px) * 5.2 + 8px)}`
   + `table.live th:nth-child(2){width:var(--valw)}`
-  + `table.live th:nth-child(3){width:var(--opw)}`
+  + `table.live th:nth-child(3){width:var(--wrw)}`
+  + `table.live th:nth-child(4){width:var(--opw)}`
   + `table.live th,table.live td{box-sizing:border-box}`
   + `table.live td{padding:2px 4px;border-bottom:1px solid var(--vscode-panel-border,rgba(128,128,128,.2));overflow:hidden}`
   // A group row is a catalogue node, not a watched value: collapsing or emptying
@@ -299,6 +301,14 @@ export const SIDEBAR_CSS = `<style>`
   // 削除 look broken while every test stayed green.
   + `td.o{width:var(--opw);text-align:right;white-space:nowrap;overflow:visible}`
   + `input{background:var(--vscode-input-background,#3c3c3c);color:var(--vscode-input-foreground,#ccc);border:1px solid var(--vscode-input-border,rgba(128,128,128,.35));border-radius:2px;padding:5px 7px;font:inherit;box-sizing:border-box;width:100%;margin:2px 0}`
+  // After the generic input rule on purpose: the 書込 cell is 5.5em wide, so it
+  // inherits none of that padding or the 2px vertical margin — a 1.6em glyph row
+  // would grow to two lines and every row's height would jump.
+  + `td.w{width:var(--wrw);text-align:left;white-space:nowrap;overflow:visible}`
+  + `td.w input{padding:1px 3px;margin:0;font-size:.95em;min-width:0}`
+  + `td.w .wr{margin-left:1px;font-size:.9em}`
+  + `td.w .wr[data-ok="1"]{color:var(--vscode-testing-iconPassed,#73c991)}`
+  + `td.w .wr[data-ok="0"]{color:var(--vscode-errorForeground,#f14c4c)}`
   + `a.btn{display:inline-block;margin:0 4px 4px 0;padding:3px 10px;border-radius:2px;background:var(--vscode-button-secondaryBackground,#3a3d41);color:var(--vscode-button-secondaryForeground,#ccc);text-decoration:none}`
   + `ul.series{list-style:none;margin:4px 0 0;padding:0}`
   + `ul.series li{display:flex;gap:6px;align-items:baseline;font-family:var(--vscode-editor-font-family,monospace);font-size:.95em;padding:2px 0}`
@@ -322,7 +332,7 @@ export const SIDEBAR_SCRIPT: string = [
   "const LOG_MAX = " + SIDEBAR_LOG_MAX_LINES + ";",
   "",
   "// ------------------------------------------------------------------ decode",
-  "// spec 3.4. One place, reused by the table, the write prompt and the graph.",
+  "// spec 3.4. One place, reused by the table, the write input and the graph.",
   "const HEX = /^\\s*0x([0-9a-fA-F]+)\\s*$/;",
   "const rawHex = (s) => { const m = HEX.exec(String(s)); return m ? '0x' + m[1] : String(s); };",
   "const bigOf = (s) => { const m = HEX.exec(String(s)); if (!m) return null; try { return BigInt('0x' + m[1]); } catch (e) { return null; } };",
@@ -372,7 +382,7 @@ export const SIDEBAR_SCRIPT: string = [
   "const meta = new Map();    // leaf name -> LeafMeta",
   "const cache = new Map();   // leaf name -> <tr>",
   "const nodes = new Map();   // node path -> {tr, path, leaves, kids}",
-  "const lastRaw = new Map();  // leaf name -> last raw hex (write prompt, fmt toggle)",
+  "const lastRaw = new Map();  // leaf name -> last raw hex (fmt toggle)",
   "const fmt = new Map();     // leaf name -> 'dec' | 'hex'",
   "const shown = new Map();   // name+value memo: BigInt churn at 100Hz is waste",
   "const series = new Map();   // name -> {visible, color}, mirrors the graph panel",
@@ -433,6 +443,14 @@ export const SIDEBAR_SCRIPT: string = [
   "  const n = cell('n');",
   "  const v = cell('v'); v.dataset.fmt = '1'; v.title = '10進/16進';",
   "  v.setAttribute('tabindex', '0'); v.setAttribute('role', 'button');",
+  "  const w = cell('w');",
+  "  const inp = document.createElement('input');",
+  "  inp.setAttribute('type', 'text'); inp.dataset.write = '1';",
+  "  inp.setAttribute('aria-label', name + ' 書込');",
+  "  inp.title = '値を入力してEnterで書き込み（Escで取り消し）';",
+  "  const wr = document.createElement('span');",
+  "  wr.className = 'wr'; wr.hidden = true;",
+  "  w.appendChild(inp); w.appendChild(wr);",
   // No literal space text nodes between the buttons: a space is ~0.45em in",
   // the UI font, so two of them plus the last button's margin made the cell",
   // content wider than --opw at EVERY size — measured 5/7/8/10px of overflow",
@@ -440,9 +458,8 @@ export const SIDEBAR_SCRIPT: string = [
   // is CSS now, so the column width is exact by construction.",
   "  const o = cell('o');",
   "  o.appendChild(opButton('add', '+', '監視に追加'));",
-  "  o.appendChild(opButton('write', '✎', '値を変更'));",
   "  o.appendChild(opButton('remove', '×', '監視から除外'));",
-  "  tr.appendChild(n); tr.appendChild(v); tr.appendChild(o);",
+  "  tr.appendChild(n); tr.appendChild(v); tr.appendChild(w); tr.appendChild(o);",
   "  return tr;",
   "};",
   "const groupRow = (name, path, label, depth) => {",
@@ -550,7 +567,9 @@ export const SIDEBAR_SCRIPT: string = [
   "        if (String(nd.kind || '') === 'array') {",
   "          rec.tr.dataset.pollable = '0';",
   "          rec.tr.children[0].title = path + ' — ' + typeName + ' (配列: 監視対象外)';",
-  "          const oc = rec.tr.children[2];",
+  "          const wc = rec.tr.children[2];",
+  "          while (wc.firstChild) wc.removeChild(wc.firstChild);",
+  "          const oc = rec.tr.children[3];",
   "          while (oc.firstChild) oc.removeChild(oc.firstChild);",
   "          oc.appendChild(document.createTextNode('—'));",
   "        } else {",
@@ -597,12 +616,6 @@ export const SIDEBAR_SCRIPT: string = [
   "    if (tr && tr.parentNode) tr.parentNode.removeChild(tr);",
   "    cache.delete(gone[i]); lastRaw.delete(gone[i]); lastValue.delete(gone[i]); watched.delete(gone[i]);",
   "  }",
-  "  nodes.forEach((rec) => {",
-  "    if (rec.tr.dataset.kind !== 'group') return;",
-  "    let left = 0;",
-  "    for (let i = 0; i < rec.leaves.length; i += 1) if (cache.has(rec.leaves[i])) left += 1;",
-  "    rec.tr.children[1].textContent = left + '/' + rec.leaves.length + ' 監視';",
-  "  });",
   "  refreshEmpty();",
   "  return gone.length;",
   "};",
@@ -612,6 +625,38 @@ export const SIDEBAR_SCRIPT: string = [
   "};",
   "",
   "// -------------------------------------------------------------------- rows",
+  "// Only a leaf row has a write cell, and it is children[2] in 変数|値|書込|操作.",
+  "// The kind check is the guard that matters: on a group row children[2] is the",
+  "// operations cell, so an unguarded index would repaint the buttons and put the",
+  "// result mark inside them.",
+  "const writeCell = (tr) => (tr.dataset.kind === 'leaf' ? tr.children[2] || null : null);",
+  "const writeInputFocused = (tr) => {",
+  "  const w = writeCell(tr);",
+  "  const inp = w ? w.children[0] : null;",
+  "  return !!inp && document.activeElement === inp;",
+  "};",
+  "const clearRowResult = (tr) => {",
+  "  const w = writeCell(tr);",
+  "  const m = w ? w.children[1] : null;",
+  "  if (!m) return;",
+  "  m.hidden = true; m.textContent = ''; m.removeAttribute('title');",
+  "};",
+  "const setRowResult = (tr, ok, message) => {",
+  "  const w = writeCell(tr);",
+  "  const m = w ? w.children[1] : null;",
+  "  if (!m) return;",
+  "  m.textContent = ok ? '✓' : '✗';",
+  "  m.dataset.ok = ok ? '1' : '0';",
+  "  m.title = String(message || '');",
+  "  m.hidden = false;",
+  "};",
+  "// Enter is the only commit. Blur and 'input' deliberately do nothing: a",
+  "// repaint or a stray focus change could otherwise send a half-typed number.",
+  "const commitWrite = (inp, tr) => {",
+  "  const value = String(inp.value || '').trim();",
+  "  if (value === '') { clearRowResult(tr); inp.value = ''; return; }",
+  "  post('live-write', { name: tr.dataset.name, value: value });",
+  "};",
   "const paintLeaf = (s) => {",
   "  let tr = cache.get(s.name);",
   "  let fresh = false;",
@@ -623,11 +668,20 @@ export const SIDEBAR_SCRIPT: string = [
   "    c[0].textContent = leafName; c[0].title = s.name;",
   "    refreshEmpty();",
   "  }",
-  "  c[1].textContent = show(s);",
   "  lastRaw.set(s.name, s.value);",
+  "  const text = show(s);",
   "  const m = meta.get(s.name);",
   "  const tip = (m ? String(m.type || m.kind) + (m.size ? ' ' + m.size + 'B' : '') : '型不明') + ' / ' + rawHex(s.value);",
-  "  if (c[1].title !== tip) { c[1].title = tip; c[1].setAttribute('aria-label', s.name + ' ' + c[1].textContent); }",
+  "  // The title and the aria-label have to describe the same sample as the text,",
+  "  // so they are derived from `text` and written before the freeze below.",
+  "  if (c[1].title !== tip) { c[1].title = tip; c[1].setAttribute('aria-label', s.name + ' ' + text); }",
+  "  // A focused 書込 input belongs to the user: at 200Hz the next sample would",
+  "  // overwrite the text — and the value it is being typed against — several",
+  "  // times a second. Only the cell text is frozen; the accessible value above",
+  "  // keeps tracking the wire, so a screen reader never announces a stale number",
+  "  // while a value is being typed.",
+  "  if (writeInputFocused(tr)) return;",
+  "  c[1].textContent = text;",
   "};",
   "",
   "const toggleFmt = (name) => {",
@@ -719,8 +773,8 @@ export const SIDEBAR_SCRIPT: string = [
   "  }",
   "  const pt = el('live-pause-toggle');",
   "  if (pt) pt.textContent = s === 'paused' ? '再開' : '一時停止';",
-  "  gate('live-start', (s === 'idle' || s === 'error') && st.project !== '',",
-  "    st.project === '' ? 'プロジェクト未選択' : '監視中です', 'live-why');",
+  "  gate('live-start', (s === 'idle' || s === 'error') && st.project !== '' && watched.size > 0,",
+  "    st.project === '' ? 'プロジェクト未選択' : watched.size === 0 ? '監視する変数がありません' : '監視中です', 'live-why');",
   "  gate('live-stop', on, '監視していません', 'live-why');",
   "  gate('live-pause-toggle', on, s === 'starting' ? '接続中です' : '監視していません', 'live-why');",
   "  gate('live-reconnect', !on, '監視中です', 'live-why');",
@@ -810,8 +864,9 @@ export const SIDEBAR_SCRIPT: string = [
   "    let hit = 0;",
   "    for (let i = 0; i < rec.leaves.length; i += 1) if (watched.has(rec.leaves[i])) hit += 1;",
   "    rec.tr.dataset.watched = hit > 0 ? '1' : '0';",
-  "    rec.tr.children[1].textContent = hit + '/' + rec.leaves.length + ' 監視';",
   "  });",
+  // gate('live-start') reads watched.size, and this is its only writer.
+  "  applyLive();",
   "};",
   "",
   "const applyState = (s) => {",
@@ -875,13 +930,6 @@ export const SIDEBAR_SCRIPT: string = [
   "const handleOp = (op, tr) => {",
   "  const label = tr.children[0] ? tr.children[0].textContent : tr.dataset.name;",
   "  if (op.dataset.op === 'add') { bulkAdd(tr.dataset.path, label); return; }",
-  "  if (op.dataset.op === 'write') {",
-  "    const name = tr.dataset.name;",
-  "    const cur = decode(lastRaw.get(name) || '0x0', meta.get(name)).input;",
-  "    const val = window.prompt(name + ' の値', cur);",
-  "    if (val !== null && val !== '') post('live-write', { name: name, value: val });",
-  "    return;",
-  "  }",
   "  if (tr.dataset.kind === 'group') { bulkRemove(tr.dataset.path, label); return; }",
   "  post('live-remove-names', { names: [tr.dataset.name] });",
   "  note(label + ': ' + dropUnder(tr.dataset.name) + ' 件を監視から除外');",
@@ -899,8 +947,20 @@ export const SIDEBAR_SCRIPT: string = [
   "    if (v) toggleFmt(v.closest('tr').dataset.name);",
   "  });",
   "  rows.addEventListener('keydown', (ev) => {",
+  "    const t0 = ev.target;",
+  "    // The 書込 input is handled first and exclusively: Enter and Esc belong to",
+  "    // it, and every other key has to stay a keystroke in a text field.",
+  "    if (t0 && t0.closest) {",
+  "      const inp = t0.closest('[data-write]');",
+  "      if (inp) {",
+  "        const tr0 = inp.closest('tr');",
+  "        if (ev.key === 'Enter') { commitWrite(inp, tr0); ev.preventDefault(); return; }",
+  "        if (ev.key === 'Escape') { inp.value = ''; clearRowResult(tr0); ev.preventDefault(); return; }",
+  "        return;",
+  "      }",
+  "    }",
   "    if (ev.key !== 'Enter' && ev.key !== ' ') return;",
-  "    const t = ev.target;",
+  "    const t = t0;",
   "    if (!t || !t.closest) return;",
   "    const tr = t.closest('tr');",
   "    if (!tr) return;",
@@ -946,7 +1006,12 @@ export const SIDEBAR_SCRIPT: string = [
   "  }",
   "  if (m.kind === 'live-drop') { setText(el('live-drop-rate'), m.summary || ''); return; }",
   "  if (m.kind === 'live-unresolved') { setText(el('live-unresolved'), (m.names || []).length > 0 ? '未解決 ' + m.names.join(', ') : ''); return; }",
-  "  if (m.kind === 'live-write-result') { setText(el('live-write-result'), m.message || ''); return; }",
+  "  if (m.kind === 'live-write-result') {",
+  "    setText(el('live-write-result'), m.message || '');",
+  "    const wtr = m.name ? cache.get(m.name) : null;",
+  "    if (wtr) setRowResult(wtr, m.ok === true, m.message || '');",
+  "    return;",
+  "  }",
   "  if (m.kind === 'live-watchlist') { applyWatchlist(Array.isArray(m.names) ? m.names : []); return; }",
   "  if (m.kind === 'build-progress') {",
   "    st.build = 'running';",

@@ -387,9 +387,11 @@ export class LivePanelProvider {
     };
   }
   private lastUnresolved: string[] = [];
+  /** Signature of the last "nothing pollable" report; '' when none pending. */
+  private noSessionSig = "";
   /** All live controls, reachable from the sidebar's 変数 section. */
   async handleLiveAction(action: string, name = "", value = ""): Promise<void> {
-    if (action === "csv") {
+    if (action === "csv" || action === "export-csv") {
       await this.exportCsv();
       return;
     }
@@ -437,7 +439,15 @@ export class LivePanelProvider {
       this.postStatus(this.child !== undefined ? "running" : "idle", "表示再開");
       return;
     }
-    await this.writeFlow(name, value);
+    if (action === "write") {
+      await this.writeFlow(name, value);
+      return;
+    }
+    // The write used to be the fallthrough for every unrecognized action, so a
+    // message kind that lost its case ("live-csv" vs "export-csv") quietly
+    // became writeFlow("", "") and reported a refusal on a row that never
+    // asked. Every caller names its action, so an unknown one is a bug to see.
+    this.slog(`ignored unknown live action: ${action}`);
   }
   private post(msg: unknown): void {
     for (const target of this.postTargets()) {
@@ -756,7 +766,8 @@ export class LivePanelProvider {
     if (this.resolution === undefined || !this.scriptsDir) {
       this.postStatus("idle", "ELF 未解決 — 先にビルドしてください");
       return;
-    }    const res = this.resolution;
+    }
+    const res = this.resolution;
     const dir = dirname(res.elf);
     try {
       mkdirSync(dir, { recursive: true });
@@ -801,16 +812,25 @@ export class LivePanelProvider {
     // in the legend while nothing was ever read for it — a blank canvas with
     // the only clue in a log channel.
     const filter = filterWatchedSymbols(res, names);
-    this.slog(`watch leaves: ${filter.symbols.length} (of ${names.length} watched names)`);
     const allUnresolved = [...unresolved, ...filter.unmatched];
     this.lastUnresolved = allUnresolved;
     if (filter.symbols.length === 0 && extras.length === 0) {
-      this.slog("session not started: nothing watched");
+      // A start attempt is a user action and can be repeated any number of
+      // times, but an identical pair of lines adds nothing: it pushes the next
+      // real line out of the log. The user-facing signal is postStatus below.
+      const sig = `${filter.symbols.length}|${names.length}|${allUnresolved.join(",")}`;
+      if (sig !== this.noSessionSig) {
+        this.noSessionSig = sig;
+        this.slog(`watch leaves: ${filter.symbols.length} (of ${names.length} watched names)`);
+        this.slog("session not started: nothing watched");
+      }
       this.postStatus("idle", "監視する変数がありません — 「変数追加」から選ぶか、ビルドしてください",
         allUnresolved.length > 0 ? `未解決: ${allUnresolved.join(", ")}` : undefined);
       this.post({ kind: "live-unresolved", names: allUnresolved });
       return;
     }
+    this.noSessionSig = "";
+    this.slog(`watch leaves: ${filter.symbols.length} (of ${names.length} watched names)`);
     try {
       writeFileSync(this.resJsonPath, buildResolutionJson(res, filter.symbols));
     } catch (err) {
@@ -1360,25 +1380,39 @@ export class LivePanelProvider {
    * resolved through `nm` instead, exactly as the watch path does.
    *
    * Resolution is the guard that matters now that the DebugGlobal fence is
-   * gone: a name that no tool can place in memory is refused before any
-   * prompt appears.
+   * gone: a name that no tool can place in memory is refused before the
+   * confirmation modal is ever shown.
    */
   private async writeFlow(name: string, value: string): Promise<void> {
     const stamp = new Date().toISOString();
-    const done = (message: string): void => {
-      this.post({ kind: "live-write-result", message });
+    // `name` and `ok` ride along with every result: the sidebar marks the row
+    // that asked, and a refusal (six ways upstream of here) has to be
+    // attributable to one row rather than to a single shared line.
+    const done = (message: string, ok: boolean): void => {
+      this.post({ kind: "live-write-result", name, ok, message });
     };
+    // A write needs the sidecar's stdin, and the confirmation modal is a
+    // question the user can only answer meaningfully if the write is actually
+    // going to happen. Refuse up front: asking for a confirmation that then
+    // fails leaves the user having paid for a dialog and gotten nothing.
+    const stdin = this.child?.stdin;
+    if (stdin === undefined || stdin === null || stdin.destroyed) {
+      const reason = "refused: no live session (start 監視開始 first)";
+      this.channel.appendLine(`[live-write] ${stamp} REFUSED(${reason}) ${name} value=${value}`);
+      done(reason, false);
+      return;
+    }
     if (this.resolution === undefined) {
       const reason = `refused: no ELF resolution yet (build first) — ${name} unresolved`;
       this.channel.appendLine(`[live-write] ${stamp} REFUSED(${reason}) ${name} value=${value}`);
-      done(reason);
+      done(reason, false);
       return;
     }
     const resolved = await this.resolveWritable(name);
     if (resolved === undefined) {
       const reason = `refused: ${name} unresolved (not a symbol in the ELF)`;
       this.channel.appendLine(`[live-write] ${stamp} REFUSED(${reason}) ${name} value=${value}`);
-      done(reason);
+      done(reason, false);
       return;
     }
     const sym = resolved;
@@ -1388,19 +1422,19 @@ export class LivePanelProvider {
     if (!WRITE_WIDTHS.includes(sym.size)) {
       const reason = `書き込み拒否: ${name} の幅が ${sym.size} バイト (書き込み対応は 1/2/4/8 バイトのみ)`;
       this.channel.appendLine(`[live-write] ${stamp} REFUSED(${reason})`);
-      done(reason);
+      done(reason, false);
       return;
     }
-    // The prompt is seeded with the DECODED text (the same decoder draws the
-    // table), while the sidecar's protocol is integer-only. Encode here, once,
-    // next to the range fence: without it every bool leaf was refused with
+    // What the user typed is DECODED text (the same decoder draws the table),
+    // while the sidecar's protocol is integer-only. Encode here, once, next to
+    // the range fence: without it every bool leaf was refused with
     // `bad value: 'true'` and a whole-number float was stored as an integer
     // bit pattern (1.0f -> 0x00000001 -> reads back 1.4e-45).
     const encoded = encodeWriteValue(value, this.leafMeta.get(name), sym.size);
     if (!encoded.ok) {
       const reason = `書き込み拒否: ${name} — ${encoded.reason}`;
       this.channel.appendLine(`[live-write] ${stamp} REFUSED(${reason})`);
-      done(reason);
+      done(reason, false);
       return;
     }
     const bits = encoded.bits;
@@ -1415,7 +1449,7 @@ export class LivePanelProvider {
     );
     if (!verdict.ok) {
       this.channel.appendLine(verdict.audit);
-      done(verdict.reason);
+      done(verdict.reason, false);
       return;
     }
     // P0-4: the value the user edits is the decoded one, and the same
@@ -1430,7 +1464,7 @@ export class LivePanelProvider {
     );
     if (confirm !== "Write") {
       this.channel.appendLine(`[live-write] ${stamp} REFUSED(modal confirmation not given) ${name}@${sym.address} value=${value}`);
-      done("refused: modal confirmation not given");
+      done("refused: modal confirmation not given", false);
       return;
     }
     const finalVerdict = decideWrite(
@@ -1440,7 +1474,7 @@ export class LivePanelProvider {
     );
     if (!finalVerdict.ok) {
       this.channel.appendLine(finalVerdict.audit);
-      done(finalVerdict.reason);
+      done(finalVerdict.reason, false);
       return;
     }
     // Transport write goes through the pyOCD sidecar, which owns the single
@@ -1453,12 +1487,12 @@ export class LivePanelProvider {
       const note = result.note === undefined ? "" : ` — ${result.note}`;
       this.channel.appendLine(
         `[live-write] ${stamp} OK ${name}@${sym.address} wrote=${result.value} readback=${result.readback}${note}`);
-      done(`${name} = ${result.value} (readback ${result.readback ?? "?"})${note}`);
+      done(`${name} = ${result.value} (readback ${result.readback ?? "?"})${note}`, true);
       return;
     }
     const reason = result.error ?? "sidecar reported an unknown failure";
     this.channel.appendLine(`[live-write] ${stamp} FAILED(${reason}) ${name}@${sym.address}`);
-    done(`書き込み失敗: ${reason}`);
+    done(`書き込み失敗: ${reason}`, false);
   }
 
   /** Most recent raw value hex for a watched name, or undefined if unseen. */
@@ -1524,10 +1558,18 @@ export class GraphPanelProvider {
     // caller. The registered sidebar view is the only other subscriber.
     webview.onDidReceiveMessage((raw: unknown) => { this.handleMessage(raw); });
     this.publishSeries();
-    // A panel opened mid-session would otherwise start blank: replay the tail
-    // of the archive so traces are on screen before the next batch arrives.
-    if (this.archive.length > 0) {
-      void webview.postMessage({ kind: "live-sample", samples: this.archive.slice(-600) });
+  }
+  /**
+   * Replay the tail of the archive AFTER live-types has been delivered.
+   * mount() used to replay inside itself while openGraphPanel registered the
+   * type target afterwards, so the replayed batch arrived type-less, decoded
+   * as non-plottable (型不明) and was dropped: a populated legend on a blank
+   * canvas with no error, staying blank while live is idle. The caller must
+   * sequence mount -> addTypeTarget -> replayArchive.
+   */
+  replayArchive(): void {
+    if (this.postTarget !== undefined && this.archive.length > 0) {
+      void this.postTarget.postMessage({ kind: "live-sample", samples: this.archive.slice(-600) });
     }
   }
   unmount(webview: vscode.Webview): void {
@@ -2621,6 +2663,9 @@ export function activate(context: vscode.ExtensionContext): void {
     );
     graphWebviewPanel = panel;
     // The document is assigned once, inside graphPanel.mount().
+    // Sequence matters: mount (html+series) -> types -> archive replay.
+    // The replay used to live inside mount, ahead of the type registration
+    // below, so it decoded as 型不明 and was dropped (blank canvas).
     graphPanel.mount(panel.webview);
     // The panel decodes with the same type metadata the table uses. Its
     // SAMPLES come from the Live->Graph sample sink alone; registering it as a
@@ -2630,6 +2675,9 @@ export function activate(context: vscode.ExtensionContext): void {
     // build has no types yet, and a one-shot send left it decoding every
     // sample as unplottable for the rest of the session (blank canvas).
     livePanel.addTypeTarget(panel.webview);
+    // A panel opened mid-session would otherwise start blank: replay the tail
+    // of the archive so traces are on screen before the next batch arrives.
+    graphPanel.replayArchive();
     panel.onDidDispose(() => {
       graphPanel.unmount(panel.webview);
       livePanel.removeTypeTarget(panel.webview);

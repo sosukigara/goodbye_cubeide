@@ -51,7 +51,7 @@ describe("sidebar html", () => {
   it("value editing is reachable from the table itself", () => {
     const script = scriptsOf(html).join("\n");
     expect(script).toContain("live-write");
-    expect(script).toContain("値を変更");
+    expect(script).toContain("値を入力してEnterで書き込み");
   });
 
   it("has no guide paragraph or AI-flavored prose", () => {

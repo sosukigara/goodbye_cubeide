@@ -43,7 +43,9 @@ describe("sidebar: font size is a user setting, and the columns follow it", () =
     // takes the <thead> value) silently wins with the wrong one.
     expect(css).toMatch(/th:nth-child\(2\)\{width:var\(--valw\)\}/);
     expect(css).toMatch(/td\.v\{width:var\(--valw\)/);
-    expect(css).toMatch(/th:nth-child\(3\)\{width:var\(--opw\)\}/);
+    expect(css).toMatch(/th:nth-child\(3\)\{width:var\(--wrw\)\}/);
+    expect(css).toMatch(/td\.w\{width:var\(--wrw\)/);
+    expect(css).toMatch(/th:nth-child\(4\)\{width:var\(--opw\)\}/);
     expect(css).toMatch(/td\.o\{width:var\(--opw\)/);
   });
 
@@ -699,8 +701,8 @@ describe("sidebar: the tree is actually readable (real resolver shape)", () => {
   it("an array node is listed but not counted as a watchable leaf", () => {
     // Measured on the real ELF: 327 leaf nodes, 324 symbols. The 3 extra are
     // arrays (`float[4]`, `struct [3]`) which resolve to no scalar symbol, so
-    // they can never show a value. Counting them made every group read
-    // "3/327 監視" with a denominator the user could never reach.
+    // they can never show a value. Counting them inflated the group's leaf
+    // total past anything the user could actually watch.
     const b = boot();
     b.send({
       kind: "live-types",
@@ -728,7 +730,9 @@ describe("sidebar: the tree is actually readable (real resolver shape)", () => {
     const arr = b.$('tr[data-name="periph.fdcan"]');
     expect(arr?.dataset.pollable).toBe("0");
     expect(arr?.children[0].title).toContain("配列");
-    expect(arr?.children[2].textContent).toBe("—");
+    expect(arr?.children[3].textContent).toBe("—");
+    // An array resolves to no scalar symbol, so the write input is stripped too.
+    expect(arr?.children[2].textContent).toBe("");
     // The group leaf count covers only what can actually be watched.
     expect(group?.children[1].textContent).toBe("1葉");
   });
@@ -794,13 +798,95 @@ describe("sidebar: typed value decode (spec 3.4)", () => {
     expect(b.$('[data-name="flags"]')?.children[1].textContent).toBe("0");
   });
 
-  it("the write prompt is seeded with the decoded value, not the bit pattern", () => {
+  it("no prompt-based write survives: the input is the only path and it starts empty", () => {
+    // Two paths for one operation means one of them rots. The ✎ prompt had to
+    // be seeded from lastRaw, which is a value the row may not even be showing
+    // any more; a seed in the input would have the same defect. Empty by
+    // default means Enter can only ever send what the user just typed.
     const b = withTree(boot());
     b.send({ kind: "live-sample", samples: [sample("sys.bias", "0x3f800000")] });
-    b.answer("2.5");
-    b.$('[data-name="sys.bias"] [data-op="write"]')?.dispatchEvent({ type: "click", target: b.$('[data-name="sys.bias"] [data-op="write"]') });
-    expect(b.prompts[0]?.message).toBe("sys.bias の値");
-    expect(b.prompts[0]?.initial).toBe("1");
+    expect(b.$('[data-op="write"]')).toBeNull();
+    const inp = b.$('[data-name="sys.bias"] [data-write]');
+    expect(inp?.value).toBe("");
+    expect(b.prompts.length).toBe(0);
+  });
+});
+
+describe("sidebar: the 書込 column writes a leaf value with Enter", () => {
+  const input = (b: Booted, name: string): StubEl | null => b.$(`[data-name="${name}"] [data-write]`);
+
+  it("puts one input between 値 and 操作 on every leaf row, and none on a group row", () => {
+    const b = withTree(boot());
+    const tr = b.$('[data-name="sys.loop_hz"]') as StubEl;
+    // 変数 | 値 | 書込 | 操作
+    expect(tr.children.length).toBe(4);
+    expect(tr.children[2].getAttribute("class")).toBe("w");
+    expect(tr.children[2].querySelector("[data-write]")).not.toBeNull();
+    // The ops moved to the 4th cell and lost the ✎ glyph.
+    expect(tr.children[3].querySelectorAll("[data-op]").map((o) => o.dataset.op)).toEqual(["add", "remove"]);
+    // A group row is a catalogue node: there is no scalar value to write.
+    expect((b.$('[data-name="drive"]') as StubEl).children.length).toBe(3);
+    // Every leaf of the tree has one, so a value never needs a round-trip to
+    // become writable.
+    expect(b.$$("[data-write]").length).toBe(b.$$('[data-kind="leaf"]').length);
+  });
+
+  it("Enter posts live-write for that row; Esc reverts and blur commits nothing", () => {
+    // At 200Hz a repaint lands between two keystrokes, so anything that commits
+    // on blur (or on 'input') can send a half-typed number. Enter is the only
+    // commit, and the modal confirm downstream is the second gate.
+    const b = withTree(boot());
+    const inp = input(b, "drive.kp") as StubEl;
+    inp.value = "2.5";
+    inp.dispatchEvent({ type: "keydown", key: "Enter", target: inp });
+    expect(b.posted.at(-1)).toEqual({ kind: "live-write", name: "drive.kp", value: "2.5" });
+
+    b.posted.length = 0;
+    inp.value = "  ";
+    inp.dispatchEvent({ type: "keydown", key: "Enter", target: inp });
+    inp.value = "9";
+    inp.dispatchEvent({ type: "keydown", key: "Escape", target: inp });
+    expect(inp.value).toBe("");
+    inp.value = "9";
+    inp.blur();
+    inp.dispatchEvent({ type: "blur", target: inp });
+    inp.dispatchEvent({ type: "keydown", key: "a", target: inp });
+    expect(b.posted.length).toBe(0);
+  });
+
+  it("a sample never overwrites the text being typed into the focused input", () => {
+    // The value cell freezes for as long as the row's input holds focus: at
+    // 200Hz the live value would otherwise overwrite the text — and the value
+    // the user is typing against — several times a second.
+    const b = withTree(boot());
+    b.send({ kind: "live-sample", samples: [sample("sys.loop_hz", "0x00000064")] });
+    const inp = input(b, "sys.loop_hz") as StubEl;
+    inp.focus();
+    inp.value = "12";
+    b.send({ kind: "live-sample", samples: [sample("sys.loop_hz", "0x000000c8")] });
+    expect(inp.value).toBe("12");
+    expect((b.$('[data-name="sys.loop_hz"]') as StubEl).children[1].textContent).toBe("100");
+    // Focus lost: the next sample repaints as usual.
+    inp.blur();
+    b.send({ kind: "live-sample", samples: [sample("sys.loop_hz", "0x0000012c")] });
+    expect((b.$('[data-name="sys.loop_hz"]') as StubEl).children[1].textContent).toBe("300");
+  });
+
+  it("attributes a result to the row that asked, refused rows included", () => {
+    // A write can be refused six different ways upstream. A single shared line
+    // cannot say WHICH row failed, so the failure has to land on that row or it
+    // is not attributable at all.
+    const b = withTree(boot());
+    b.send({ kind: "live-write-result", name: "drive.kp", ok: false, message: "書き込み失敗: アドレス未解決" });
+    const mark = b.$('[data-name="drive.kp"] .wr') as StubEl;
+    expect(mark.hidden).toBe(false);
+    expect(mark.textContent).toBe("✗");
+    expect(mark.title).toBe("書き込み失敗: アドレス未解決");
+    expect((b.$('[data-name="sys.loop_hz"] .wr') as StubEl).hidden).toBe(true);
+    // ...and the shared line still carries the full text.
+    expect(b.$('[data-testid="live-write-result"]')?.textContent).toBe("書き込み失敗: アドレス未解決");
+    b.send({ kind: "live-write-result", name: "drive.kp", ok: true, message: "drive.kp = 2.50000" });
+    expect(mark.textContent).toBe("✓");
   });
 });
 
@@ -969,14 +1055,14 @@ describe("sidebar: removal by prefix", () => {
     b.send({ kind: "live-watchlist", names: ["periph.leaf1"] });
     expect(b.$('[data-name="periph.leaf0"]')?.dataset.watched).toBe("0");
     expect(b.$('[data-name="periph.leaf1"]')?.dataset.watched).toBe("1");
-    expect(b.$('[data-name="periph"]')?.children[1].textContent).toBe("1/3 監視");
+    expect(b.$('[data-name="periph"]')?.children[1].textContent).toBe("3葉");
   });
 });
 
 describe("sidebar: states and affordances", () => {
   it("the table has a thead and an empty state that tracks the row count", () => {
     const b = boot();
-    expect(b.$$('[data-testid="live-tree"] th').map((t) => t.textContent)).toEqual(["変数", "値", "操作"]);
+    expect(b.$$('[data-testid="live-tree"] th').map((t) => t.textContent)).toEqual(["変数", "値", "書込", "操作"]);
     expect(b.$('[data-testid="live-empty"]')?.hidden).toBe(false);
     withTree(b);
     expect(b.$('[data-testid="live-empty"]')?.hidden).toBe(true);
@@ -1027,8 +1113,14 @@ describe("sidebar: states and affordances", () => {
     expect(b.$('[data-testid="live-export-csv"]')?.disabled).toBe(true);
     expect(b.$('[data-testid="live-stop"]')?.title).toBe("監視していません");
     b.send({ kind: "live-bootstrap", project: "/fw/a", hz: 100, state: { ...SIDEBAR_PANEL_DEFAULT_STATE, selectedDir: "/fw/a" } });
+    // A project alone is not enough: an empty watchlist can never poll, so the
+    // button stays disabled instead of logging the same refusal forever.
+    expect(b.$('[data-testid="live-start"]')?.disabled).toBe(true);
+    expect(why()).toContain("監視する変数がありません");
+    b.send({ kind: "live-watchlist", names: ["sys.loop_hz"] });
     expect(b.$('[data-testid="live-start"]')?.disabled).toBe(false);
     expect(why()).not.toContain("プロジェクト未選択");
+    expect(why()).not.toContain("監視する変数がありません");
     withTree(b);
     b.send({ kind: "live-status", state: "running" });
     expect(b.$('[data-testid="live-start"]')?.disabled).toBe(true);

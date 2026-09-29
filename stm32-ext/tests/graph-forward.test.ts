@@ -34,6 +34,7 @@ vi.mock("vscode", () => ({
 }));
 
 import { GraphPanelProvider, LivePanelProvider } from "../src/extension.js";
+import type { ElfResolution } from "../src/live/elfResolver.js";
 import { readNewSamples } from "../src/live/manager.js";
 
 interface FakeWebview {
@@ -122,5 +123,70 @@ describe("live -> graph sample forwarding (todo2)", () => {
       (m) => (m as { kind?: string }).kind === "live-sample",
     );
     expect(graphSamples).toHaveLength(1);
+  });
+});
+
+describe("graph archive replay ordering", () => {
+  const kinds = (posted: unknown[]): string[] =>
+    posted.map((m) => String((m as { kind?: string }).kind));
+
+  // The archive only holds the series the graph plots (pushSamples filters on
+  // `selected`), so a replay test has to select them first. addSeries is what
+  // the panel's 追加 button reaches through handleMessage("graph-add").
+  const select = (graph: GraphPanelProvider, name: string): void => {
+    (graph as unknown as Record<string, (n: string) => void>)["addSeries"]!(name);
+  };
+
+  // sendTypesTo sends live-types only when a resolution is set, which is what
+  // makes the ordering observable at all: with no types the replay would be
+  // dropped by the panel for a second, unrelated reason.
+  const RESOLUTION = {
+    elf: "/tmp/fw/Debug/fw.elf",
+    base: "0x08000000",
+    tree: [],
+    symbols: [
+      { name: "sys.loop_hz", address: "0x200000bc", size: 4, kind: "scalar", signed: true, type: "uint32_t" },
+      { name: "sys.uptime_ms", address: "0x200000ec", size: 4, kind: "scalar", signed: true, type: "uint32_t" },
+    ],
+  } as unknown as ElfResolution;
+
+  it("replays only after openGraphPanel has registered the type target", () => {
+    const live = new LivePanelProvider(CHANNEL);
+    const graph = new GraphPanelProvider();
+    const graphPosted: unknown[] = [];
+    live.setResolution(RESOLUTION, "STM32F4");
+    wireLiveToGraph(live, graph);
+    select(graph, "sys.loop_hz");
+    select(graph, "sys.uptime_ms");
+    // Fill the archive while nothing is mounted, so the only possible source of
+    // a live-sample message below is the replay itself.
+    const { samples } = readNewSamples(MOCK_CSV, 0);
+    live.pushSamples(samples);
+
+    // The product's openGraphPanel sequence, one step at a time.
+    const view = fakeView(graphPosted).webview as never;
+    graph.mount(view);
+    expect(kinds(graphPosted).filter((k) => k === "live-sample")).toHaveLength(0);
+    live.addTypeTarget(view);
+    graph.replayArchive();
+
+    const seen = kinds(graphPosted);
+    expect(seen.filter((k) => k === "live-sample")).toHaveLength(1);
+    // The order is the fix. mount() used to post the archive tail itself, so
+    // the batch arrived before live-types, decoded as 型不明 and was dropped by
+    // the panel's ingest(): a full legend over a permanently blank canvas, with
+    // no error anywhere. Asserting the messages are both present is not enough
+    // — it is the sequence that decides whether the points are plottable.
+    expect(seen.indexOf("live-types")).toBeGreaterThanOrEqual(0);
+    expect(seen.indexOf("live-types")).toBeLessThan(seen.indexOf("live-sample"));
+  });
+
+  it("replayArchive is a no-op with an empty archive", () => {
+    const graph = new GraphPanelProvider();
+    const graphPosted: unknown[] = [];
+    const view = fakeView(graphPosted).webview as never;
+    graph.mount(view);
+    graph.replayArchive();
+    expect(kinds(graphPosted).filter((k) => k === "live-sample")).toHaveLength(0);
   });
 });
