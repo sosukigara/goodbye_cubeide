@@ -5,7 +5,7 @@
 export { parseCproject } from "./cproject.js";
 export { parseIoc, mergeWithIoc } from "./ioc.js";
 export { lookupMcu } from "./mcuTable.js";
-export { resolveWorkspaceLoc, workspaceProjectOf } from "./workspaceLoc.js";
+export { eclipseWorkspaceRoot, resolveWorkspaceLoc, workspaceProjectOf } from "./workspaceLoc.js";
 export type {
   BuildConfiguration,
   IocConfig,

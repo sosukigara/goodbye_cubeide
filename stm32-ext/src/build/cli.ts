@@ -4,9 +4,9 @@
 //     --out-dir <abs build-ext dir> [--artifact <name>] [--no-ccache]
 // Reads the firmware tree only; writes build.ninja (+ sources.list) into out-dir.
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
-import { parseCproject } from "../parser/index.js";
+import { eclipseWorkspaceRoot, parseCproject } from "../parser/index.js";
 import {
   artifactOf,
   debugBuildDirOf,
@@ -48,7 +48,10 @@ export function main(argv: readonly string[]): number {
   const cfg = parseCproject(xml, {
     projectNameHint: projectName,
     workspaceRoots: { [projectName]: projectRoot },
-    defaultRoot: projectRoot,
+    // ${workspace_loc} is the workspace root that CONTAINS the project, so
+    // anchoring it on the project dir resolved shared header paths to a
+    // directory that does not exist.
+    defaultRoot: eclipseWorkspaceRoot(projectRoot, (p) => existsSync(p)),
   });
   const debugBuildDirAbs = debugBuildDirOf(cfg, projectRoot);
   const linkerAbs = linkerAbsOf(cfg, projectRoot);

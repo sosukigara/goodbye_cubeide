@@ -7,7 +7,7 @@ import { execFile } from "node:child_process";
 import { DEFAULT_CLI, resolveCliPath, runFlash, type FlashSettings } from "./flash/backend";
 import { parseSidebarMessage, renderSidebar, SIDEBAR_VIEW_ID, type SidebarState } from "./panels/sidebar";
 import { discoverProjects, getSelectedDir, setSelectedDir, type DiscoveredProject } from "./project/discover";
-import { parseCproject } from "./parser/index";
+import { eclipseWorkspaceRoot, parseCproject } from "./parser/index";
 import {
   artifactOf,
   debugBuildDirOf,
@@ -2031,7 +2031,11 @@ async function buildProjectFlow(
   const cfg = parseCproject(xml, {
     projectNameHint: projectName,
     workspaceRoots: { [projectName]: projectRoot },
-    defaultRoot: projectRoot,
+    // ${workspace_loc} is the Eclipse workspace root, which is the directory
+    // that holds .metadata/ and CONTAINS the project directory. Anchoring it
+    // on the project root resolved ${workspace_loc}/tr to <project>/tr, which
+    // does not exist, so every include from a shared header directory failed.
+    defaultRoot: eclipseWorkspaceRoot(projectRoot, (p) => existsSync(p)),
   });
   const debugBuildDirAbs = debugBuildDirOf(cfg, projectRoot);
   const outDirAbs = join(projectRoot, "build-ext");

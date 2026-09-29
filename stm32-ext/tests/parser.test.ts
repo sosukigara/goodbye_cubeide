@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { mergeWithIoc, parseCproject, parseIoc } from "../src/parser/index.js";
+import { eclipseWorkspaceRoot, mergeWithIoc, parseCproject, parseIoc } from "../src/parser/index.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FIX = (name: string): string => readFileSync(join(HERE, "fixtures", name), "utf8");
@@ -143,5 +143,55 @@ describe("synthetic cases", () => {
 
   it("garbage input throws a clear error", () => {
     expect(() => parseCproject("<not-a-cproject/>")).toThrow(/no <configuration> blocks/);
+  });
+});
+
+describe("include paths that point outside the project", () => {
+  // A CubeIDE project can sit next to its shared headers instead of above them:
+  // haru-2026/unit_swerve stores &quot;${workspace_loc}/tr&quot;, so the path
+  // arrives with a LITERAL pair of quotes around it (XML &quot;) and with a
+  // macro no compiler understands. Passed through untouched, that becomes
+  // -I"${workspace_loc}/tr" and every include from tr/ fails to resolve.
+  const withExternalIncludes = (macro: string): string =>
+    FIX("unit_omni3.cproject")
+      .replaceAll("../../tr", `&quot;${macro}/tr&quot;`)
+      .replaceAll("../../shared", `&quot;${macro}/shared&quot;`);
+
+  it("expands a quoted ${workspace_loc} and leaves neither quotes nor macro behind", () => {
+    const cfg = parseCproject(withExternalIncludes("${workspace_loc}"), {
+      projectNameHint: "unit_omni3",
+      workspaceRoots: { unit_omni3: "/ws/unit_omni3" },
+      defaultRoot: "/ws",
+    });
+    expect(cfg.includes).toContain("/ws/tr");
+    expect(cfg.includes).toContain("/ws/shared");
+    expect(cfg.includes.filter((i) => i.includes('"'))).toEqual([]);
+    expect(cfg.includes.filter((i) => i.includes("${"))).toEqual([]);
+  });
+
+  it("keeps a macro it cannot expand verbatim, and says which one", () => {
+    const cfg = parseCproject(withExternalIncludes("${COMMON_DIR}"), {
+      projectNameHint: "unit_omni3",
+      workspaceRoots: { unit_omni3: "/ws/unit_omni3" },
+      defaultRoot: "/ws",
+    });
+    // Dropping it instead would silently change which headers are visible.
+    expect(cfg.includes).toContain("${COMMON_DIR}/tr");
+    expect(cfg.warnings.some((w) => w.includes("${COMMON_DIR}/tr"))).toBe(true);
+  });
+});
+
+describe("eclipseWorkspaceRoot", () => {
+  // ${workspace_loc} names the Eclipse workspace root, the directory holding
+  // .metadata/, which is the PARENT of the project directory. Anchoring it on
+  // the project root resolves ${workspace_loc}/tr to a path that cannot exist.
+  it("walks up to the .metadata marker", () => {
+    const markers = new Set(["/ws/.metadata"]);
+    expect(eclipseWorkspaceRoot("/ws/unit_omni3", (p) => markers.has(p))).toBe("/ws");
+  });
+
+  it("starts at the given directory and stops at the filesystem root", () => {
+    expect(eclipseWorkspaceRoot("/ws/unit_omni3", () => false)).toBe("/ws/unit_omni3");
+    expect(eclipseWorkspaceRoot("/", () => true)).toBe("/");
   });
 });

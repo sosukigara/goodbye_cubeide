@@ -202,6 +202,13 @@ function buildMcuFlags(mcu: string, fpuVerbatim: string, floatAbiVerbatim: strin
   return { mcpu, mthumb: true, mfloatAbi, mfpu, argv };
 }
 
+// A .cproject stores a path that needs quoting as "..." INSIDE the attribute,
+// so the quotes survive XML decoding and end up as the first and last
+// characters of the path. The compiler would then search a directory whose
+// name begins with a double quote, and every include through it fails.
+const stripOuterQuotes = (p: string): string =>
+  p.length >= 2 && p.startsWith('"') && p.endsWith('"') ? p.slice(1, -1) : p;
+
 export function parseCproject(xmlText: string, opts?: ParseOptions): ProjectConfig {
   const warnings: string[] = [];
   const blocks = configurationBlocks(xmlText);
@@ -245,7 +252,9 @@ export function parseCproject(xmlText: string, opts?: ParseOptions): ProjectConf
     optionsBySuperClass(body, "definedsymbols").flatMap((t) => listValues(t)),
   );
   const includes = dedupeKeepOrder(
-    optionsBySuperClass(body, "includepaths").flatMap((t) => listValues(t)),
+    optionsBySuperClass(body, "includepaths")
+      .flatMap((t) => listValues(t))
+      .map((inc) => resolveWorkspaceLoc(stripOuterQuotes(inc), withOpts).resolved),
   );
 
   const linkerScriptRaw = firstOptionValue(body, "linker.option.script") ?? "";
@@ -265,6 +274,11 @@ export function parseCproject(xmlText: string, opts?: ParseOptions): ProjectConf
 
   if (linkerScriptRaw !== "" && /\$\{[^}]*\}/.test(linkerScriptResolved)) {
     warnings.push(`linker script partly unresolved: "${linkerScriptRaw}" -> "${linkerScriptResolved}"`);
+  }
+  for (const inc of includes) {
+    if (/\$\{[^}]*\}/.test(inc)) {
+      warnings.push(`include path partly unresolved: "${inc}"`);
+    }
   }
 
   return {

@@ -1,5 +1,7 @@
 // ${workspace_loc} multi-root resolution (G3). Pure string ops, no fs access.
 
+import { dirname, join } from "node:path";
+
 import type { ParseOptions } from "./types.js";
 
 export interface ResolvedPath {
@@ -48,4 +50,23 @@ export function resolveWorkspaceLoc(raw: string, opts?: ParseOptions): ResolvedP
   }
 
   return { raw, resolved };
+}
+
+/**
+ * ${workspace_loc} names the Eclipse workspace root: the directory that holds
+ * .metadata/, and therefore the PARENT of the project directory rather than the
+ * project directory itself. `dirExists` is injected to keep this fs-free.
+ */
+export function eclipseWorkspaceRoot(startDir: string, dirExists: (path: string) => boolean): string {
+  let dir = startDir;
+  for (;;) {
+    if (dirExists(join(dir, ".metadata"))) {
+      return dir;
+    }
+    const parent = dirname(dir);
+    if (parent === dir) {
+      return startDir;
+    }
+    dir = parent;
+  }
 }
