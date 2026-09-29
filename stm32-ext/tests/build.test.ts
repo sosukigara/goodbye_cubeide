@@ -1,9 +1,10 @@
 // todo3 tests: ninja generation (verbatim flags), diagnostics parsing, parity logic.
 import { describe, expect, it } from "vitest";
 import { describeBuildFailure, resolveTool, runNinja } from "../src/build/backend.js";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   artifactOf,
   classifySource,
@@ -26,6 +27,10 @@ import {
 } from "../src/build/parity";
 import { diagJumpHref } from "../src/build/backend";
 import type { ProjectConfig } from "../src/parser/index";
+import { parseCproject } from "../src/parser/index";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const FIX = (name: string): string => readFileSync(join(HERE, "fixtures", name), "utf8");
 
 function fakeConfig(): ProjectConfig {
   return {
@@ -376,6 +381,40 @@ describe("toolchain lookup", () => {
     const r = resolveTool("pyocd.exe", { PATH: dir }, "win32");
     expect(r.found).toBe(true);
     expect(r.searched.some((p) => p.endsWith("pyocd.exe.exe"))).toBe(false);
+  });
+});
+
+// The include path is the one option list a project can get wrong without the
+// parser looking broken: a real project stored "\"${workspace_loc}/tr\"" and
+// the generated -I reached GCC as a path whose first character was a quote, so
+// every shared-header include failed with "No such file or directory" while
+// parseCproject still reported a plausible config. This pins the emitted
+// command, which is what the compiler actually reads.
+describe("a workspace_loc include path reaches the compiler resolved", () => {
+  const configWithWorkspaceLocIncludes = (): ProjectConfig =>
+    parseCproject(
+      FIX("unit_omni3.cproject")
+        .replaceAll("../../tr", '&quot;${workspace_loc}/tr&quot;')
+        .replaceAll("../../shared", '&quot;${workspace_loc}/shared&quot;'),
+      {
+        projectNameHint: "unit_omni3",
+        workspaceRoots: { unit_omni3: "/ws/unit_omni3" },
+        defaultRoot: "/ws",
+      },
+    );
+
+  it("emits an absolute -I with neither the macro nor a quote left in it", () => {
+    const cfg = configWithWorkspaceLocIncludes();
+    const ninja = renderNinja({
+      ...renderArgs(cfg),
+      projectRoot: "/ws/unit_omni3",
+      debugBuildDirAbs: "/ws/unit_omni3/Debug",
+      includesAbs: resolveIncludes(cfg.includes, "/ws/unit_omni3/Debug"),
+    });
+    expect(ninja).toContain("-I/ws/tr");
+    expect(ninja).toContain("-I/ws/shared");
+    expect(ninja).not.toContain("${workspace_loc}");
+    expect(ninja).not.toMatch(/-I"/);
   });
 });
 
