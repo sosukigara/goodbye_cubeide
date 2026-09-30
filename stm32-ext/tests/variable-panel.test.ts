@@ -392,6 +392,25 @@ describe("variable panel live values", () => {
     expect(p.rowNames()).toEqual(before);
     expect(p.el("var-note").textContent).toContain("を除外しました");
   });
+
+  it("lists catalog rows from the index when tree is null (catalog-only resolution)", () => {
+    // A catalog-only body has tree: null and flat RAM-catalog leaves in the
+    // index. The row set is driven by the index, so a null tree must still
+    // render every leaf — watched first, then the rest sorted.
+    const p = boot();
+    p.post({
+      kind: "live-types",
+      tree: null,
+      index: { counter: LEAF(), flag: LEAF({ kind: "bool", size: 1, type: "bool" }) },
+    });
+    p.post({ kind: "live-watchlist", names: ["counter"] });
+    expect(p.rowNames()).toEqual(["counter", "flag"]);
+    expect(p.valueOf("counter")).toBe("-");
+    expect(p.valueOf("flag")).toBe("-");
+    p.post({ kind: "live-sample", samples: [sample("counter", "0x0000002a", 0)] });
+    expect(p.valueOf("counter")).toBe("42");
+    expect(p.valueOf("flag")).toBe("-");
+  });
 });
 
 function rowTr(p: Panel, name: string): StubEl {

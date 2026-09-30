@@ -59,6 +59,7 @@ import {
   exitCodeReason,
   extraArgs,
   filterWatchedSymbols,
+  hasWindow,
   isProbeBusyOutput,
   parseNmSymbol,
   parseNmSymbolSize,
@@ -863,6 +864,9 @@ export class LivePanelProvider {
       return;
     }
     const res = this.resolution;
+    // Catalog-only firmware has no DebugGlobal window (explicit zero window):
+    // every watched symbol is polled via --extra, never via the JSON.
+    const catalogMode = !hasWindow(res.base, res.size);
     const dir = dirname(res.elf);
     try {
       mkdirSync(dir, { recursive: true });
@@ -885,7 +889,9 @@ export class LivePanelProvider {
     this.lastDropReport = 0;
     const checked = readSettings();
     const hz = checked.ok ? checked.value.pollHz : 100;
-    this.postStatus("starting", `監視を開始します (${hz}Hz)`);
+    this.postStatus("starting", catalogMode
+      ? `監視を開始します (${hz}Hz、カタログモード: DebugGlobalなし)`
+      : `監視を開始します (${hz}Hz)`);
     // D-5: the probe check was computed and thrown away, so a CubeIDE that
     // holds the ST-LINK was reported and then ignored. Act on the answer.
     if (await checkProbeConflict(this.channel)) {
@@ -940,7 +946,7 @@ export class LivePanelProvider {
         mergedExtras.push(e);
       }
     }
-    this.slog(`watch leaves: ${inWindow.length} in-window + ${mergedExtras.length} extras (of ${names.length} watched names, unmatched ${allUnresolved.length})`);
+    this.slog(`watch leaves: ${inWindow.length} in-window + ${mergedExtras.length} extras (of ${names.length} watched names, unmatched ${allUnresolved.length})${catalogMode ? " [catalog mode: no DebugGlobal window, all via --extra]" : ""}`);
     try {
       writeFileSync(this.resJsonPath, buildResolutionJson(res, inWindow));
     } catch (err) {

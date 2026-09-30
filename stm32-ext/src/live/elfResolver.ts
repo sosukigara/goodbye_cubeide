@@ -60,8 +60,11 @@ export interface ElfResolution {
   readonly backend: string;
   readonly symbols: readonly ResolvedSymbol[];
   readonly unresolved: readonly string[];
-  /** Absent when the resolver ran without `--all-members` / DWARF tree. */
-  readonly tree?: TypeNode;
+  /** Catalog-only bodies carry an explicit null (no DebugGlobal window);
+   * resolver-with-tree bodies carry a node; older bodies omit the key.
+   * Widened (not normalized) so the host stays faithful to the wire shape;
+   * consumers must treat null and undefined identically. */
+  readonly tree?: TypeNode | null;
 }
 
 export interface ElfResolveRunner {
@@ -209,7 +212,10 @@ export function parseElfResolutionJson(stdout: string): ElfResolution {
   const base = typeof r["base"] === "string" ? r["base"] : "";
   const end = typeof r["end"] === "string" ? r["end"] : "";
   const size = typeof r["size"] === "number" ? r["size"] : -1;
-  if (parseHex(base) === undefined || parseHex(end) === undefined || !(size > 0)) {
+  // An explicit zero window (base/end 0x00000000, size 0) is a deliberate
+  // catalog-only body, not a missing window: only a negative/missing size
+  // still fails here.
+  if (parseHex(base) === undefined || parseHex(end) === undefined || !(size >= 0)) {
     throw new Error(`elf_resolve: missing base/size. ${STRIP_HINT}`);
   }
   const symbols: ResolvedSymbol[] = [];

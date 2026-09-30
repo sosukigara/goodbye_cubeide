@@ -88,8 +88,26 @@ function symbolJson(s: ResolvedSymbol): Record<string, unknown> {
  *
  * `watched` is mandatory on purpose: handing in the whole resolution is what
  * made the sidecar poll 355 leaves at 100Hz (D11).
+ *
+ * A catalog-only resolution (zero window: no DebugGlobal) yields a canonical
+ * zero-window body — base/end "0x00000000", size 0, empty symbols — because
+ * the sidecar's load_watchlist range fence ([base, base+size)) would drop
+ * every symbols[] entry of such a body. Catalog leaves travel as --extra
+ * instead (see partitionOutOfWindowSymbols), so the empty symbols list loses
+ * nothing. A null tree is omitted exactly like an absent one.
  */
 export function buildResolutionJson(res: ElfResolution, watched: readonly ResolvedSymbol[]): string {
+  if (!hasWindow(res.base, res.size)) {
+    return JSON.stringify({
+      elf: res.elf,
+      base: "0x00000000",
+      size: 0,
+      end: "0x00000000",
+      has_debug_info: res.hasDebugInfo,
+      backend: res.backend,
+      symbols: [],
+    });
+  }
   return JSON.stringify({
     elf: res.elf,
     base: res.base,
@@ -98,7 +116,7 @@ export function buildResolutionJson(res: ElfResolution, watched: readonly Resolv
     has_debug_info: res.hasDebugInfo,
     backend: res.backend,
     symbols: watched.map(symbolJson),
-    ...(res.tree === undefined ? {} : { tree: res.tree }),
+    ...(res.tree === undefined || res.tree === null ? {} : { tree: res.tree }),
   });
 }
 
@@ -297,6 +315,17 @@ export interface WindowPartition {
 }
 
 /**
+ * True when [baseHex, baseHex+size) is a genuine DebugGlobal window. A
+ * catalog-only resolution carries an explicit zero window (base
+ * "0x00000000", size 0), which is deliberate — not a missing window — and
+ * every caller below treats it as "route everything through --extra".
+ */
+export function hasWindow(baseHex: string, size: number): boolean {
+  const base = Number.parseInt(baseHex, 16);
+  return Number.isSafeInteger(base) && Number.isSafeInteger(size) && size > 0;
+}
+
+/**
  * Partition watched leaves into in-window (resolution JSON) vs
  * out-of-window (sidecar --extra).
  *
@@ -306,16 +335,30 @@ export interface WindowPartition {
  * monitor_odom.*) carry real addresses outside the DebugGlobal window, so
  * writing them into the JSON means they are never polled. Splitting them
  * host-side keeps every watched name polled with its DWARF size.
+ *
+ * With no window at all (catalog-only resolution: size 0 or an unparseable
+ * base) there is no range the sidecar could accept, so every symbol travels
+ * as --extra with its real DWARF width. Putting them into the JSON instead
+ * would poll nothing: the zero-window fence drops each one.
  */
 export function partitionOutOfWindowSymbols(
   symbols: readonly ResolvedSymbol[],
   baseHex: string,
   size: number,
 ): WindowPartition {
-  const base = Number.parseInt(baseHex, 16);
-  if (!Number.isSafeInteger(base) || !Number.isSafeInteger(size) || size <= 0) {
-    return { inWindow: symbols, outOfWindowAsExtras: [] };
+  if (!hasWindow(baseHex, size)) {
+    return {
+      inWindow: [],
+      outOfWindowAsExtras: symbols.map((s) => ({
+        name: s.name,
+        address: s.address,
+        size: Number.isSafeInteger(s.size) && (s.size as number) > 0
+          ? s.size
+          : DEFAULT_EXTRA_SIZE,
+      })),
+    };
   }
+  const base = Number.parseInt(baseHex, 16);
   const inWindow: ResolvedSymbol[] = [];
   const outOfWindowAsExtras: ExtraWatch[] = [];
   for (const s of symbols) {

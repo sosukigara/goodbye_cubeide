@@ -3,9 +3,12 @@ import {
   PROBE_BUSY_MESSAGE,
   buildResolutionJson,
   extraArgs,
+  filterWatchedSymbols,
+  hasWindow,
   isProbeBusyOutput,
   parseNmSymbol,
   parseNmSymbolSize,
+  partitionOutOfWindowSymbols,
   readNewSamples,
   readSessionLock,
   resolveWatchlist,
@@ -118,5 +121,70 @@ describe("live session manager contracts", () => {
     expect(isProbeBusyOutput("usb.core.USBError: [Errno 16] Resource busy")).toBe(true);
     expect(isProbeBusyOutput("all green")).toBe(false);
     expect(PROBE_BUSY_MESSAGE).toContain("⏹ 停止");
+  });
+});
+
+const CATALOG_RES: ElfResolution = {
+  elf: "/fw/naked.elf",
+  base: "0x00000000",
+  size: 0,
+  end: "0x00000000",
+  hasDebugInfo: true,
+  backend: "pyelftools",
+  symbols: [
+    { name: "counter", address: "0x20000000", offset: 0, size: 4, type: "uint32_t", kind: "scalar", signed: false },
+    { name: "flag", address: "0x20000010", offset: 0, size: 1, type: "bool", kind: "bool", signed: false },
+  ],
+  unresolved: [],
+  tree: null,
+};
+
+describe("zero-window (catalog-only) resolution", () => {
+  it("routes every watched symbol to extras with its real DWARF width", () => {
+    expect(hasWindow(CATALOG_RES.base, CATALOG_RES.size)).toBe(false);
+    const split = partitionOutOfWindowSymbols(CATALOG_RES.symbols, CATALOG_RES.base, CATALOG_RES.size);
+    expect(split.inWindow).toEqual([]);
+    expect(split.outOfWindowAsExtras).toEqual([
+      { name: "counter", address: "0x20000000", size: 4 },
+      { name: "flag", address: "0x20000010", size: 1 },
+    ]);
+    expect(extraArgs(split.outOfWindowAsExtras)).toEqual([
+      "--extra=counter=0x20000000:4",
+      "--extra=flag=0x20000010:1",
+    ]);
+  });
+  it("writes a valid zero-window resolution JSON body", () => {
+    const j = JSON.parse(buildResolutionJson(CATALOG_RES, [])) as Record<string, unknown>;
+    expect(j["base"]).toBe("0x00000000");
+    expect(j["size"]).toBe(0);
+    expect(j["end"]).toBe("0x00000000");
+    expect(j["symbols"]).toEqual([]);
+    expect("tree" in j).toBe(false);
+  });
+  it("matches flat catalog names without a tree (no struct prefixes, no false empty)", () => {
+    const filter = filterWatchedSymbols(CATALOG_RES, ["counter", "ghost"]);
+    expect(filter.symbols.map((s) => s.name)).toEqual(["counter"]);
+    expect(filter.unmatched).toEqual(["ghost"]);
+  });
+});
+
+describe("normal-window resolution keeps the in-window/extras split", () => {
+  it("partitions leaves against the DebugGlobal window", () => {
+    expect(hasWindow(RES.base, RES.size)).toBe(true);
+    const outOfWindow = {
+      name: "robot.x", address: "0x20001000", offset: 0, size: 2, type: "int16_t", kind: "scalar", signed: true,
+    } as const;
+    const split = partitionOutOfWindowSymbols([...RES.symbols, outOfWindow], RES.base, RES.size);
+    expect(split.inWindow.map((s) => s.name)).toEqual(["sys.loop_hz", "sys.uptime_ms"]);
+    expect(split.outOfWindowAsExtras).toEqual([
+      { name: "robot.x", address: "0x20001000", size: 2 },
+    ]);
+    const j = JSON.parse(buildResolutionJson(RES, split.inWindow)) as {
+      base: string; size: number; end: string; symbols: { name: string }[];
+    };
+    expect(j.base).toBe(RES.base);
+    expect(j.size).toBe(RES.size);
+    expect(j.end).toBe(RES.end);
+    expect(j.symbols.map((s) => s.name)).toEqual(["sys.loop_hz", "sys.uptime_ms"]);
   });
 });
