@@ -633,7 +633,10 @@ def test_no_probe_attached_fails_fast_instead_of_waiting_forever(monkeypatch, tm
     waited. The probe list is enumerated non-blocking first, so an empty list is
     a definite answer and turns into this exit code plus an actionable message.
     """
-    import pyocd.core.helpers as helpers
+    # ponytail: in-test importorskip (same reason-giving skip style as
+    # test_elf_resolve.py's skipif guards) — pyocd is hardware tooling, not a
+    # test dependency, so missing pyocd skips instead of failing.
+    helpers = pytest.importorskip("pyocd.core.helpers", reason="pyocd not installed (hardware tooling)")
 
     class EmptyConnectHelper:
         def __init__(self):
@@ -662,7 +665,8 @@ def test_no_probe_attached_fails_fast_instead_of_waiting_forever(monkeypatch, tm
 def test_a_present_probe_still_takes_the_session_path(monkeypatch, tmp_path):
     """The enumeration must not break the working case: a non-empty list goes on
     to open a session exactly as before."""
-    import pyocd.core.helpers as helpers
+    # ponytail: same skip guard as above — both tests need pyocd's helpers.
+    helpers = pytest.importorskip("pyocd.core.helpers", reason="pyocd not installed (hardware tooling)")
 
     class OneConnectHelper:
         opened = False
