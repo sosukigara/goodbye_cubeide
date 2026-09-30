@@ -226,6 +226,9 @@ function currentProjects(): DiscoveredProject[] {
  * Scan the firmware sources belonging to an ELF for global identifiers.
  * Best-effort and read-only; failures yield an empty suggestion list.
  */
+/** Source-scan cache: file reads move off the QuickPick critical path. */
+const sourceScanCache = new Map<string, { fp: string; result: { name: string; detail: string }[] }>();
+
 export function scanProjectSources(elfPath: string, resolvedNames: readonly string[]): { name: string; detail: string }[] {
   try {
     let dir = dirname(elfPath);
@@ -244,7 +247,7 @@ export function scanProjectSources(elfPath: string, resolvedNames: readonly stri
     if (!root) {
       return [];
     }
-    const files: string[] = [];
+    const files: { full: string; mtimeMs: number; size: number }[] = [];
     for (const sub of ["Core/Src", "Core/Inc"]) {
       const abs = join(root, sub);
       let entries: string[];
@@ -259,18 +262,28 @@ export function scanProjectSources(elfPath: string, resolvedNames: readonly stri
         }
         const full = join(abs, e);
         try {
-          if (statSync(full).isFile() && statSync(full).size <= 1024 * 1024) {
-            files.push(full);
+          const st = statSync(full);
+          if (st.isFile() && st.size <= 1024 * 1024) {
+            files.push({ full, mtimeMs: st.mtimeMs, size: st.size });
           }
         } catch {
           continue;
         }
       }
     }
+    // Fingerprint first, read later: stats are cheap, full reads are what
+    // froze the 変数追加 button on every press. Unchanged sources reuse the
+    // previous result without touching file contents.
+    const fp = files.map((f) => `${f.full}:${f.mtimeMs}:${f.size}`).join("|");
+    const cacheKey = `${root}\u0000${[...resolvedNames].sort().join(",")}`;
+    const cached = sourceScanCache.get(cacheKey);
+    if (cached !== undefined && cached.fp === fp) {
+      return cached.result;
+    }
     const resolved = new Set(resolvedNames);
     const out: { name: string; detail: string }[] = [];
     const seen = new Set<string>();
-    for (const f of files) {
+    for (const { full: f } of files) {
       let text: string;
       try {
         text = readFileSync(f, "utf8");
@@ -285,6 +298,13 @@ export function scanProjectSources(elfPath: string, resolvedNames: readonly stri
       }
       if (out.length >= 120) {
         break;
+      }
+    }
+    sourceScanCache.set(cacheKey, { fp, result: out });
+    if (sourceScanCache.size > 8) {
+      const oldest = sourceScanCache.keys().next();
+      if (!oldest.done) {
+        sourceScanCache.delete(oldest.value);
       }
     }
     return out;
