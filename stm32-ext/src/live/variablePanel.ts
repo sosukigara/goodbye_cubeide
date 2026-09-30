@@ -24,6 +24,7 @@
 
 import type * as vscode from "vscode";
 import { CSV_HEADER } from "./poller.js";
+import { NAME_PATH_JS } from "./namePath.js";
 import { EXT_VERSION } from "../version.js";
 
 /** viewType the host registers in the editor area. */
@@ -64,6 +65,9 @@ const VAR_CSS = `<style>`
 // The whole webview program. Kept as one string so the host owns exactly one
 // place where HTML and script can drift apart.
 const VAR_SCRIPT = `var __SEED = __VAR_SEED__;`
+  // Shared hierarchy logic (src/live/namePath.ts): concatenated, not nested
+  // as a template literal, so `${`/backticks can never break the builder.
+  + NAME_PATH_JS
   + `const vscode = acquireVsCodeApi();`
   + `const q = (s) => document.querySelector(s);`
   + `const mk = (t) => document.createElement(t);`
@@ -181,12 +185,45 @@ const VAR_SCRIPT = `var __SEED = __VAR_SEED__;`
   + ` }`
   + ` paintAll();`
   + `}`
+  // Datallist depth sized off measured reality: the resolver reports ~355
+  // leaves for unit_omni3 before arrays (more after), so 5000 options leave
+  // headroom for 10x growth instead of silently hiding later members.
+  // Groups sort first (npCandidates): when the list is truncated, the names
+  // that survive are the ones carrying a whole subtree. Trailing segments
+  // ride along as extra options because <datalist> matches from the start of
+  // the value — a user typing `drive_` only ever matches `drive_...`
+  // segments, never the full `measure.drive_...` path. addName maps a bare
+  // segment back to its full paths, so both shapes are addable. A struct or
+  // array group is therefore pickable here exactly like a leaf; before this
+  // the list held leaves only, so a group could never be picked at all.
+  + `const MAX_OPTIONS = 5000;`
   + `function fillNames() {`
   + ` if (!namesBox) return;`
   + ` namesBox.textContent = '';`
-  + ` const keys = Array.from(V.types.keys()).sort();`
-  + ` const n = Math.min(keys.length, 800);`
-  + ` for (let i = 0; i < n; i += 1) { const o = mk('option'); o.setAttribute('value', keys[i]); namesBox.appendChild(o); }`
+  + ` const keys = Array.from(V.types.keys());`
+  + ` const cands = npCandidates(keys);`
+  + ` const seen = Object.create(null);`
+  + ` const out = [];`
+  + ` const push = (v) => { if (v !== '' && !seen[v]) { seen[v] = true; out.push(v); } };`
+  + ` for (let i = 0; i < cands.length; i += 1) push(cands[i]);`
+  + ` for (let i = 0; i < cands.length; i += 1) push(npLastSegment(cands[i]));`
+  + ` const n = Math.min(out.length, MAX_OPTIONS);`
+  + ` for (let i = 0; i < n; i += 1) { const o = mk('option'); o.setAttribute('value', out[i]); namesBox.appendChild(o); }`
+  + `}`
+  // A trailing segment typed in the picker back to the full paths it names.
+  // Exact full paths never reach here: the caller checks those first.
+  + `function resolveVarInput(raw) {`
+  + ` const name = String(raw === undefined || raw === null ? '' : raw).trim();`
+  + ` if (name === '') return [];`
+  + ` const keys = Array.from(V.types.keys());`
+  + ` const cands = npCandidates(keys);`
+  + ` if (cands.indexOf(name) >= 0) return [name];`
+  + ` const out = [];`
+  + ` const seen = Object.create(null);`
+  + ` for (let i = 0; i < cands.length; i += 1) {`
+  + `  if (npLastSegment(cands[i]) === name && !seen[cands[i]]) { seen[cands[i]] = true; out.push(cands[i]); }`
+  + ` }`
+  + ` return out;`
   + `}`
   + `function rowFor(name) {`
   + ` const kids = tbody ? tbody.children : [];`
@@ -280,20 +317,49 @@ const VAR_SCRIPT = `var __SEED = __VAR_SEED__;`
   + `function addName(raw) {`
   + ` const name = String(raw === undefined || raw === null ? '' : raw).trim();`
   + ` if (name === '') { fail('変数名が空です'); return; }`
-  + ` if (V.watched[name]) { note(name + ' は追加済み'); return; }`
-  + ` V.watched[name] = true; V.order.push(name);`
+  // No type map yet: keep the optimistic path — a global outside the DWARF
+  // tree is still addable and the host resolves it via nm.
+  + ` if (V.types.size === 0) {`
+  + `  if (V.watched[name]) { note(name + ' は追加済み'); return; }`
+  + `  V.watched[name] = true; V.order.push(name);`
+  + `  rebuild();`
+  + `  vscode.postMessage({ kind: 'var-add', name: name });`
+  + `  clearErr();`
+  + `  return;`
+  + ` }`
+  + ` const targets = resolveVarInput(name);`
+  + ` if (targets.length === 0) { fail('未知の変数: ' + name); return; }`
+  + ` let fresh = 0;`
+  + ` for (let i = 0; i < targets.length; i += 1) {`
+  + `  if (V.watched[targets[i]]) continue;`
+  + `  V.watched[targets[i]] = true; V.order.push(targets[i]); fresh += 1;`
+  + `  vscode.postMessage({ kind: 'var-add', name: targets[i] });`
+  + ` }`
   + ` rebuild();`
-  + ` vscode.postMessage({ kind: 'var-add', name: name });`
+  + ` if (fresh === 0) note(name + ' は追加済み');`
   + ` clearErr();`
   + `}`
   + `function removeName(raw) {`
   + ` const name = String(raw === undefined || raw === null ? '' : raw).trim();`
   + ` if (name === '') { fail('変数名が空です'); return; }`
-  + ` if (!V.watched[name]) { fail('未登録の変数: ' + name); return; }`
-  + ` delete V.watched[name];`
-  + ` V.order = V.order.filter((n) => n !== name);`
+  + ` if (V.watched[name]) {`
+  + `  delete V.watched[name];`
+  + `  V.order = V.order.filter((n) => n !== name);`
+  + `  rebuild();`
+  + `  vscode.postMessage({ kind: 'var-remove', name: name });`
+  + `  clearErr();`
+  + `  return;`
+  + ` }`
+  + ` const targets = resolveVarInput(name).filter((t) => V.watched[t]);`
+  + ` if (targets.length === 0) { fail('未登録の変数: ' + name); return; }`
+  + ` const drop = {};`
+  + ` for (let i = 0; i < targets.length; i += 1) {`
+  + `  delete V.watched[targets[i]];`
+  + `  drop[targets[i]] = true;`
+  + `  vscode.postMessage({ kind: 'var-remove', name: targets[i] });`
+  + ` }`
+  + ` V.order = V.order.filter((n) => !drop[n]);`
   + ` rebuild();`
-  + ` vscode.postMessage({ kind: 'var-remove', name: name });`
   + ` clearErr();`
   + `}`
   + `window.addEventListener('message', (e) => {`

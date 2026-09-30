@@ -26,7 +26,11 @@ describe("sidebar: font size is a user setting, and the columns follow it", () =
     expect(renderSidebar(undefined as never, 999)).toContain("--stm32ext-ui-font:16px");
     expect(renderSidebar(undefined as never, Number.NaN)).toContain("--stm32ext-ui-font:15px");
     for (const bad of [0, 999, Number.NaN, Number.POSITIVE_INFINITY]) {
-      expect(renderSidebar(undefined as never, bad)).not.toContain("NaN");
+      // Scoped to the CSS value, not the whole document: the inlined webview
+      // script legitimately contains the `NaN` literal (numeric parse failure
+      // in the shared name-path comparator), and a blanket ban on the
+      // substring cannot tell that apart from a broken custom property.
+      expect(renderSidebar(undefined as never, bad)).not.toContain("NaNpx");
     }
   });
 
@@ -915,8 +919,16 @@ describe("sidebar: graph section is a launcher plus a series list, not a second 
     expect(values).toContain("drive");
     expect(values).toContain("drive.emergency");
     expect(values).toContain("drive.controller");
-    // Sorted, so the browser's own prefix filter walks them in order.
-    expect([...values].sort()).toEqual(values);
+    // Groups precede leaves: when the option list is truncated, the names that
+    // survive are the ones carrying a whole subtree. Plain lexicographic order
+    // is deliberately not the contract any more.
+    const isGroup = (v) => values.some((o) => o !== v && (o.startsWith(v + ".") || o.startsWith(v + "[")));
+    const firstLeaf = values.findIndex((v) => !isGroup(v));
+    for (let i = 0; i < values.length && firstLeaf >= 0; i += 1) {
+      if (isGroup(values[i])) {
+        expect(i, values[i] + " is a group and must precede every leaf").toBeLessThan(firstLeaf);
+      }
+    }
   });
 
   it("the graph input is wired to the completion list", () => {

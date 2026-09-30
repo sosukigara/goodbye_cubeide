@@ -84,6 +84,8 @@ import {
   unmount as unmountVariablePanel,
 } from "./live/variablePanel";
 import { WatchBatcher } from "./live/watchBatch";
+import { isUnder } from "./live/namePath";
+import { buildWatchPickItems } from "./live/pickItems";
 
 /**
  * How many times one user-requested session may resume itself after the
@@ -1265,8 +1267,12 @@ export class LivePanelProvider {
       return;
     }
     const before = this.watchNames();
+    // isUnder, not a dotted-only prefix: removing the array group
+    // `measure.drive_target_radps` must take its `[0..2]` element leaves, and
+    // a sibling whose name merely shares characters (`measure.drive_now...`)
+    // must survive — the boundary check is what tells them apart.
     const kept = before.filter((n) =>
-      !drop.some((d) => n === d || n.startsWith(`${d}.`)));
+      !drop.some((d) => isUnder(n, d)));
     await this.storage?.update(WATCHLIST_KEY, kept);
     this.slog(`watchlist: -${drop.join(",")} (${kept.length} left)`);
     this.post({ kind: "live-watchlist", names: kept });
@@ -1297,25 +1303,25 @@ export class LivePanelProvider {
     const res = this.resolution;
     this.slog(`add-watch: QuickPick over ${res.symbols.length} resolved symbols`);
     const current = new Set(this.watchNames());
-    // Struct-aware completion: group dotted names (sys.loop_hz -> group sys)
-    // with separator headers; typing "sys." narrows to its members via the
-    // built-in fuzzy/substring filter (member prediction).
-    const groups = new Map<string, { name: string; address: string }[]>();
-    for (const s of res.symbols) {
-      const dot = s.name.indexOf(".");
-      const group = dot > 0 ? s.name.slice(0, dot) : "(global)";
-      const list = groups.get(group) ?? [];
-      list.push({ name: s.name, address: s.address });
-      groups.set(group, list);
-    }
+    // Items come from the shared pure builder: tree AND catalog roots AND
+    // resolved leaves, so struct/array groups are pickable rows whose
+    // selection registers the GROUP NAME (filterWatchedSymbols expands it to
+    // every leaf, element leaves included, at poll time). The old inline
+    // version listed leaves only and bucketed on the first dot, which hid
+    // every group and mis-bucketed `measure.drive_target_radps[0]`.
+    // `exactOptionalPropertyTypes` forbids handing an optional property an
+    // explicit `undefined`, so the keys are spread in only when present
+    // rather than assigned `res.tree ?? undefined`.
+    const built = buildWatchPickItems({
+      symbols: res.symbols,
+      ...(res.tree === undefined ? {} : { tree: res.tree }),
+      ...(this.catalogRoots === undefined ? {} : { catalogRoots: this.catalogRoots }),
+      watched: current,
+    });
     type PickItem = { label: string; description?: string; picked?: boolean; kind?: vscode.QuickPickItemKind };
-    const items: PickItem[] = [];
-    for (const [group, members] of [...groups.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1))) {
-      items.push({ label: group, kind: vscode.QuickPickItemKind.Separator });
-      for (const m of members) {
-        items.push({ label: m.name, description: `${m.address}${current.has(m.name) ? " ●監視中" : ""}`, picked: current.has(m.name) });
-      }
-    }
+    const items: PickItem[] = built.map((b) => b.separator
+      ? { label: b.label, kind: vscode.QuickPickItemKind.Separator }
+      : { label: b.label, description: b.description, picked: b.picked });
     // Source-scanned globals (code.cpp and friends): predicted suggestions
     // for names the ELF resolution does not list; resolved via nm at confirm.
     const scanned = scanProjectSources(res.elf, res.symbols.map((s) => s.name));

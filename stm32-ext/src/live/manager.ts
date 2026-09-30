@@ -3,6 +3,7 @@
 // LiveSample rows, and nm-based address lookup for arbitrary variables.
 
 import type { ElfResolution, ResolvedSymbol } from "./elfResolver";
+import { isUnder } from "./namePath.js";
 import type { LiveSample } from "./poller";
 
 export const WATCHLIST_KEY = "stm32ext.liveWatch";
@@ -132,6 +133,9 @@ export interface WatchFilter {
  *
  * A watched name matches itself and, when it names a struct or array node in
  * the type tree, every leaf underneath it (`periph` -> all 185 leaves).
+ * The boundary is isUnder (`.` OR `[`): the resolver now emits per-element
+ * leaves (`measure.drive_target_radps[0]`), and a dotted-only prefix test
+ * matched none of them, so an array group expanded to nothing polled.
  *
  * There is deliberately NO upper bound here. It used to stop at 64 leaves and
  * report the rest as `overflow`, which meant a variable the user had selected
@@ -154,8 +158,7 @@ export function filterWatchedSymbols(
       continue;
     }
     seen.add(want);
-    const prefix = `${want}.`;
-    const hits = res.symbols.filter((s) => s.name === want || s.name.startsWith(prefix));
+    const hits = res.symbols.filter((s) => isUnder(s.name, want));
     if (hits.length === 0) {
       unmatched.push(want);
       continue;

@@ -11,6 +11,7 @@
 
 import type { GccDiagnostic } from "../build/backend.js";
 import type { DiscoveredProject } from "../project/discover.js";
+import { NAME_PATH_JS } from "../live/namePath.js";
 
 export interface SidebarSection {
   readonly id: "project" | "build" | "flash" | "live" | "graph" | "log";
@@ -258,6 +259,15 @@ export const SIDEBAR_SCRIPT: string = [
   "const qa = (s) => Array.prototype.slice.call(document.querySelectorAll(s));",
   "const setText = (node, t) => { if (node && node.textContent !== t) node.textContent = t; };",
   "const LOG_MAX = " + SIDEBAR_LOG_MAX_LINES + ";",
+  // Shared hierarchy logic (src/live/namePath.js): one definition of `.`/`[`
+  // boundaries for host and panels. Spread as lines — the array is joined
+  // with newlines at module load, so hoisted `function` declarations land in
+  // the same script scope as every caller below.
+  ...NAME_PATH_JS.split("\n"),
+  // Datalist depth sized off measured reality: the resolver reports ~355
+  // leaves for unit_omni3 before arrays (more after), so 5000 options leave
+  // headroom for 10x growth instead of silently hiding later members.
+  "const MAX_OPTIONS = 5000;",
   "",
   "// ------------------------------------------------------------------ decode",
   "// spec 3.4. One place, reused by the table, the write input and the graph.",
@@ -408,7 +418,10 @@ export const SIDEBAR_SCRIPT: string = [
   "  tr.appendChild(n); tr.appendChild(v); tr.appendChild(o);",
   "  return tr;",
   "};",
-  "const under = (name, prefix) => prefix === '' || name === prefix || name.indexOf(prefix + '.') === 0;",
+  // npIsUnder: `.` OR `[` is a boundary, so an array group matches its
+  // element leaves and `a.bx` never matches `a.b`. The dotted-only test hid
+  // or deleted the wrong rows once element leaves existed.
+  "const under = (name, prefix) => npIsUnder(name, prefix);",
   "",
   "const refreshEmpty = () => { const n = el('live-empty'); if (n) n.hidden = cache.size > 0; };",
   "const note = (t) => setText(el('live-add-note'), t);",
@@ -424,23 +437,34 @@ export const SIDEBAR_SCRIPT: string = [
 "  const box = el('graph-names');",
 "  if (!box) return;",
 "  while (box.firstChild) box.removeChild(box.firstChild);",
+"  const cands = npCandidates(Array.from(meta.keys()));",
 "  const seen = new Set();",
 "  const out = [];",
-"  meta.forEach((_m, full) => {",
-"  if (full === '' || seen.has(full)) return;",
-"  seen.add(full); out.push(full);",
-"  for (let d = full.indexOf('.'); d > 0; d = full.indexOf('.', d + 1)) {",
-"    const grp = full.slice(0, d);",
-"    if (grp !== '' && !seen.has(grp)) { seen.add(grp); out.push(grp); }",
-"  }",
-"});",
-"  out.sort();",
-"  const n = Math.min(out.length, 800);",
+"  const push = (v) => { if (v !== '' && !seen.has(v)) { seen.add(v); out.push(v); } };",
+"  for (let i = 0; i < cands.length; i += 1) push(cands[i]);",
+"  for (let i = 0; i < cands.length; i += 1) push(npLastSegment(cands[i]));",
+"  const n = Math.min(out.length, MAX_OPTIONS);",
 "  for (let i = 0; i < n; i += 1) {",
 "    const o = document.createElement('option');",
 "    o.setAttribute('value', out[i]);",
 "    box.appendChild(o);",
 "  }",
+"};",
+"const expandGraphNames = (ns) => {",
+"  const keys = Array.from(meta.keys());",
+"  if (keys.length === 0) return ns;",
+"  const cands = npCandidates(keys);",
+"  const out = [];",
+"  for (let i = 0; i < ns.length; i += 1) {",
+"    const raw = ns[i];",
+"    if (cands.indexOf(raw) >= 0) { out.push(raw); continue; }",
+"    let hit = false;",
+"    for (let k = 0; k < cands.length; k += 1) {",
+"      if (npLastSegment(cands[k]) === raw) { out.push(cands[k]); hit = true; }",
+"    }",
+"    if (!hit) out.push(raw);",
+"  }",
+"  return out;",
 "};",
 "",
   "const buildTree = (tree, index) => {",
@@ -486,7 +510,7 @@ export const SIDEBAR_SCRIPT: string = [
   "        // The label is the path's last segment, not `name`: the resolver gives",
   "        // the last segment, but a full path in `name` would then render as the",
   "        // whole dotted path in a 150px column. Either shape yields the same.",
-  "        const leafName = path.split('.').pop() || nm;",
+  "        const leafName = npLastSegment(path) || nm;",
   "        rec.tr.children[0].textContent = disp0 !== '' ? disp0 : leafName;",
   "        rec.tr.children[0].title = path === leafName ? path : (path + ' — ' + typeName);",
   "        rec.tr.children[0].style.paddingLeft = (6 + Math.min(depth, 4) * 8) + 'px';",
@@ -545,7 +569,7 @@ export const SIDEBAR_SCRIPT: string = [
   "        rec.tr.children[1].textContent = leaves.length + '件';",
   "      } else {",
   "        rec.tr = leafRow(path);",
-  "        rec.tr.children[0].textContent = disp !== '' ? disp : (path.split('.').pop() || nm);",
+  "        rec.tr.children[0].textContent = disp !== '' ? disp : (npLastSegment(path) || nm);",
   "        rec.tr.children[0].title = path + (typeName !== '' ? ' — ' + typeName : '');",
   "        rec.tr.children[0].style.paddingLeft = (6 + Math.min(depth, 4) * 8) + 'px';",
   "        rows.appendChild(rec.tr);",
@@ -606,8 +630,7 @@ export const SIDEBAR_SCRIPT: string = [
   "    const done = new Set();",
   "    nodes.forEach((rec) => {",
   "      const p = rec.path;",
-  "      const dot = p.lastIndexOf('.');",
-  "      const parent = dot < 0 ? '' : p.slice(0, dot);",
+  "      const parent = npParentOf(p);",
   "      if (parent !== '' && nodes.has(parent)) return;",
   "      if (done.has(p)) return;",
   "      const mark = (r) => { done.add(r.path); for (let i = 0; i < r.kids.length; i += 1) mark(r.kids[i]); };",
@@ -702,7 +725,7 @@ export const SIDEBAR_SCRIPT: string = [
   "  const c = tr.children;",
   "  // Label the same way the tree does: the last segment, full path in the title.",
   "  if (fresh || c[0].textContent === '') {",
-  "    const leafName = String(s.name).split('.').pop() || s.name;",
+  "    const leafName = npLastSegment(String(s.name)) || s.name;",
   "    c[0].textContent = leafName; c[0].title = s.name;",
   "    refreshEmpty();",
   "  }",

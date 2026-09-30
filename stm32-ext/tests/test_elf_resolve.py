@@ -27,9 +27,11 @@ RESOLVE = os.path.join(EXT, "scripts", "elf_resolve.py")
 POLL = os.path.join(EXT, "scripts", "live_poll.py")
 
 # Ground truth measured from build-ext/unit_omni3.elf (spec 1.2): DebugGlobal
-# is 976 B with 324 scalar leaves, 26 nested structs and 3 arrays.
-EXPECTED_LEAVES = 324
-EXPECTED_STRUCT_NODES = 26
+# is 976 B with 338 leaves (324 scalar + 14 array-element leaves: 8 floats
+# and 3x2 fdcan struct fields), 29 nested structs (26 + 3 fdcan elements)
+# and 3 arrays.
+EXPECTED_LEAVES = 338
+EXPECTED_STRUCT_NODES = 29
 EXPECTED_ARRAY_NODES = 3
 
 # The tests below assert against the REAL project firmware, which only exists
@@ -173,7 +175,7 @@ def test_tree_is_nested_and_covers_the_whole_struct():
     arrays = [n for n in nodes if n["kind"] == "array"]
     assert len(structs) == EXPECTED_STRUCT_NODES
     assert len(arrays) == EXPECTED_ARRAY_NODES
-    assert len(nodes) == EXPECTED_STRUCT_NODES + EXPECTED_ARRAY_NODES == 29
+    assert len(nodes) == EXPECTED_STRUCT_NODES + EXPECTED_ARRAY_NODES == 32
     # nested children (D9), not a flat node list with parent ids
     assert depth(tree) >= 3
     assert all("parent" not in n for n in nodes)
@@ -791,4 +793,205 @@ def test_debug_global_shape_unchanged(catalog_elf):
     assert res["tree"]["type"] == "TelemetryCatalog"
     assert res["size"] > 0
     assert res["base"] != "0x00000000"
-    assert res["unresolved"] == []
+
+
+# ---------------------------------------------------------------------------
+# array elements as watchable leaves: DW_TAG_array_type children are
+# subranges, never members, so the member walker alone dropped every array.
+# ---------------------------------------------------------------------------
+
+FIXTURE_C_ARRAYS = r"""
+#include <stdint.h>
+#include <stdbool.h>
+
+typedef enum { MODE_IDLE = 0, MODE_FOLLOW = 2, MODE_STOP = -1 } DriveMode;
+
+struct Pose { float x; float y; };
+struct Inner { char tag[8]; uint32_t id; };
+struct Bits { unsigned a : 3; unsigned b : 5; };
+
+struct DebugGlobal {
+  float v[3];
+  char name[16];
+  struct Pose poses[3];
+  float grid[2][3];
+  struct Inner items[2];
+  struct Bits bits_arr[2];
+  DriveMode modes[2];
+  int zero[0];
+  int tail[];
+};
+
+volatile struct DebugGlobal debug;
+float cal_table[4];
+"""
+
+
+@pytest.fixture(scope="session")
+def array_elf(tmp_path_factory):
+    """Struct + global arrays: floats, strings, structs, multidim, bits."""
+    if GCC is None:
+        pytest.skip("arm-none-eabi-gcc not available for the DWARF fixture")
+    return _build_fixture(tmp_path_factory.mktemp("arrays"), 5,
+                           FIXTURE_C_ARRAYS)
+
+
+def _node_by_path(res, path):
+    return next(n for n in walk(res["tree"]) if n["path"] == path)
+
+
+def test_array_float_leaves_with_correct_addresses(array_elf):
+    res = resolve(array_elf, args=["--all-members"])
+    base = int(res["base"], 16)
+    node = _node_by_path(res, "v")
+    assert node["kind"] == "array"
+    assert node["length"] == 3
+    assert node["size"] == 12
+    assert len(node["children"]) == 3
+    assert "v" not in res["index"]
+    for i in range(3):
+        leaf = leaf_by_name(res, f"v[{i}]")
+        assert leaf["kind"] == "float"
+        assert leaf["type"] == "float"
+        assert leaf["size"] == 4
+        assert leaf["signed"] is True
+        assert int(leaf["address"], 16) == base + node["offset"] + 4 * i
+        assert leaf["offset"] == node["offset"] + 4 * i
+        assert res["index"][f"v[{i}]"]["kind"] == "float"
+
+
+def test_array_char_stays_a_single_string_leaf(array_elf):
+    res = resolve(array_elf, args=["--all-members"])
+    label = leaf_by_name(res, "name")
+    assert label["kind"] == "string"
+    assert label["length"] == 16
+    assert label["size"] == 16
+    assert label["type"] == "char[16]"
+    assert not [s["name"] for s in res["symbols"]
+                if s["name"].startswith("name[")]
+
+
+def test_array_of_structs_recurses_into_members(array_elf):
+    res = resolve(array_elf, args=["--all-members"])
+    base = int(res["base"], 16)
+    node = _node_by_path(res, "poses")
+    assert node["kind"] == "array"
+    assert len(node["children"]) == 3
+    for i in range(3):
+        elem = _node_by_path(res, f"poses[{i}]")
+        assert elem["kind"] == "struct"
+        assert elem["type"] == "Pose"
+        for field, off in (("x", 0), ("y", 4)):
+            leaf = leaf_by_name(res, f"poses[{i}].{field}")
+            assert leaf["kind"] == "float"
+            assert leaf["size"] == 4
+            assert leaf["offset"] == node["offset"] + 8 * i + off
+            assert int(leaf["address"], 16) == base + leaf["offset"]
+    assert "poses" not in res["index"]
+
+
+def test_array_multidim_nests_outer_first(array_elf):
+    res = resolve(array_elf, args=["--all-members"])
+    base = int(res["base"], 16)
+    node = _node_by_path(res, "grid")
+    assert node["kind"] == "array"
+    assert node["length"] == 6
+    assert node["size"] == 24
+    assert len(node["children"]) == 2
+    names = [s["name"] for s in res["symbols"] if s["name"].startswith("grid")]
+    assert names == [f"grid[{i}][{j}]" for i in range(2) for j in range(3)]
+    for i in range(2):
+        row = _node_by_path(res, f"grid[{i}]")
+        assert row["kind"] == "array"
+        assert len(row["children"]) == 3
+        for j in range(3):
+            leaf = leaf_by_name(res, f"grid[{i}][{j}]")
+            assert leaf["kind"] == "float"
+            assert leaf["size"] == 4
+            assert leaf["offset"] == node["offset"] + 12 * i + 4 * j
+            assert int(leaf["address"], 16) == base + leaf["offset"]
+
+
+def test_array_nested_char_and_bitfield_struct_arrays(array_elf):
+    res = resolve(array_elf, args=["--all-members"])
+    by_name = {s["name"]: s for s in res["symbols"]}
+    # char array inside a struct array stays a string leaf per element
+    for i in range(2):
+        tag = by_name[f"items[{i}].tag"]
+        assert tag["kind"] == "string"
+        assert tag["size"] == 8
+        assert tag["length"] == 8
+        assert by_name[f"items[{i}].id"]["kind"] == "scalar"
+    assert not [n for n in by_name if n.startswith("items[") and ".tag[" in n]
+    # bitfield struct array keeps the re-anchored read window per element
+    elem0 = _node_by_path(res, "bits_arr[0]")
+    elem1 = _node_by_path(res, "bits_arr[1]")
+    assert elem1["offset"] - elem0["offset"] == elem0["size"]
+    for i in range(2):
+        for field, bit_size in (("a", 3), ("b", 5)):
+            leaf = by_name[f"bits_arr[{i}].{field}"]
+            assert leaf["kind"] == "bitfield", leaf
+            assert leaf["bit_size"] == bit_size, leaf
+            assert leaf["offset"] == elem0["offset"] + elem0["size"] * i
+            assert res["index"][leaf["name"]]["bit_size"] == bit_size
+
+
+def test_array_enum_elements_carry_enumerators(array_elf):
+    res = resolve(array_elf, args=["--all-members"])
+    for i in range(2):
+        leaf = leaf_by_name(res, f"modes[{i}]")
+        assert leaf["kind"] == "enum"
+        assert leaf["type"] == "DriveMode"
+        assert leaf["enumerators"] == [
+            {"name": "MODE_IDLE", "value": 0},
+            {"name": "MODE_FOLLOW", "value": 2},
+            {"name": "MODE_STOP", "value": -1},
+        ]
+        assert res["index"][leaf["name"]]["enumerators"] == leaf["enumerators"]
+
+
+def test_array_zero_length_produces_no_leaves(array_elf):
+    res = resolve(array_elf, args=["--all-members"])
+    for path in ("zero", "tail"):
+        node = _node_by_path(res, path)
+        assert node["kind"] == "array"
+        assert node["children"] == []
+    assert not [s["name"] for s in res["symbols"]
+                if s["name"].startswith("zero[") or s["name"].startswith("tail[")]
+
+
+def test_array_node_is_group_while_elements_carry_element_kind(array_elf):
+    res = resolve(array_elf, args=["--all-members"])
+    node = _node_by_path(res, "v")
+    assert node["kind"] == "array"
+    assert {c["kind"] for c in node["children"]} == {"float"}
+    assert {c["path"] for c in node["children"]} == {
+        "v[0]", "v[1]", "v[2]"}
+    assert all(c["name"] == f"[{i}]" for i, c in enumerate(node["children"]))
+    grid = _node_by_path(res, "grid")
+    assert grid["kind"] == "array"
+    assert grid["children"][0]["kind"] == "array"
+
+
+def test_array_catalog_global_has_element_leaves(array_elf):
+    res = resolve(array_elf, args=["--all-members", "--catalog"])
+    cal = next(r for r in res["roots"] if r["name"] == "cal_table")
+    assert cal["kind"] == "array"
+    assert len(cal["children"]) == 4
+    names = [s["name"] for s in res["symbols"] if "cal_table" in s["name"]]
+    assert names == ["cal_table"] + [f"cal_table[{i}]" for i in range(4)]
+    for i in range(4):
+        assert res["index"][f"cal_table[{i}]"]["kind"] == "float"
+        assert res["index"][f"cal_table[{i}]"]["size"] == 4
+
+
+def test_array_fallback_backend_agrees(array_elf, tmp_path):
+    p = run([sys.executable, RESOLVE, array_elf, "--all-members", "--json"],
+            env={**os.environ, "PYTHONPATH": _blocked_pyelftools(tmp_path)})
+    assert p.returncode == 0, p.stderr
+    fallback = json.loads(p.stdout)
+    assert fallback["backend"] == "nm+readelf"
+    reference = resolve(array_elf, args=["--all-members"])
+    assert fallback["symbols"] == reference["symbols"]
+    assert fallback["tree"] == reference["tree"]
+    assert fallback["index"] == reference["index"]

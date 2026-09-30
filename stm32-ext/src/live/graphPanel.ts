@@ -20,6 +20,7 @@
 // string builder and a stray `</script>` would truncate the page.
 
 import { CSV_HEADER } from "./poller.js";
+import { NAME_PATH_JS } from "./namePath.js";
 import { EXT_VERSION } from "../version.js";
 
 /** viewType the host registers in the editor area. */
@@ -70,6 +71,9 @@ const GRAPH_CSS = `<style>`
 // The whole webview program. Kept as one string so the host owns exactly one
 // place where HTML and script can drift apart.
 const GRAPH_SCRIPT = `var __SEED = __GRAPH_SEED__;`
+  // Shared hierarchy logic (src/live/namePath.ts): concatenated, not nested
+  // as a template literal, so `${`/backticks can never break the builder.
+  + NAME_PATH_JS
   + `const vscode = acquireVsCodeApi();`
   + `const q = (s) => document.querySelector(s);`
   + `const mk = (t) => document.createElement(t);`
@@ -80,7 +84,10 @@ const GRAPH_SCRIPT = `var __SEED = __GRAPH_SEED__;`
   // At 200Hz that is 7.5s of trace; the x axis reports the real span it has.
   + `const MAX_POINTS = 1500;`
   + `const PRUNE_BATCH = 256;`
-  + `const MAX_BULK = 32;`
+  // Datallist depth sized off measured reality: the resolver reports ~355
+  // leaves for unit_omni3 before arrays (more after), so 5000 options leave
+  // headroom for 10x growth instead of silently hiding later members.
+  + `const MAX_OPTIONS = 5000;`
   + `const MAX_LANES = 4;`
   + `const PERF_RING = 512;`
   + `const READOUT_MS = 250;`
@@ -460,24 +467,42 @@ const GRAPH_SCRIPT = `var __SEED = __GRAPH_SEED__;`
   // The membership set is a Set, not a plain object: a C symbol called
   // `constructor` or `toString` would hit Object.prototype and be dropped
   // from the candidates without a trace.
+  // Groups sort first (npCandidates): when the list is truncated, the names
+  // that survive are the ones carrying a whole subtree. Trailing segments
+  // ride along as extra options because <datalist> matches from the start of
+  // the value — a user typing `drive_` only ever matches `drive_...`
+  // segments, never the full `measure.drive_...` path. add() maps a bare
+  // segment back to its full paths, so both shapes are addable.
   + `function fillNames() {`
   + ` if (!namesBox) return;`
   + ` namesBox.textContent = '';`
-  + ` const seen = new Set();`
-  + ` const out = [];`
   + ` const keys = Array.from(G.types.keys());`
-  + ` for (let i = 0; i < keys.length; i += 1) {`
-  + `  const full = keys[i];`
-  + `  if (full === '' || seen.has(full)) continue;`
-  + `  seen.add(full); out.push(full);`
-  + `  for (let d = full.indexOf('.'); d > 0; d = full.indexOf('.', d + 1)) {`
-  + `   const grp = full.slice(0, d);`
-  + `   if (grp !== '' && !seen.has(grp)) { seen.add(grp); out.push(grp); }`
-  + `  }`
-  + ` }`
-  + ` out.sort();`
-  + ` const n = Math.min(out.length, 800);`
+  + ` const cands = npCandidates(keys);`
+  + ` const seen = Object.create(null);`
+  + ` const out = [];`
+  + ` const push = (v) => { if (v !== '' && !seen[v]) { seen[v] = true; out.push(v); } };`
+  + ` for (let i = 0; i < cands.length; i += 1) push(cands[i]);`
+  + ` for (let i = 0; i < cands.length; i += 1) push(npLastSegment(cands[i]));`
+  + ` const n = Math.min(out.length, MAX_OPTIONS);`
   + ` for (let i = 0; i < n; i += 1) { const o = mk('option'); o.setAttribute('value', out[i]); namesBox.appendChild(o); }`
+  + `}`
+  // A trailing segment typed in the picker (`drive_target_radps[0]`) back to
+  // the full paths it names. Exact full paths never reach here: the caller
+  // checks those first, so this is only the segment-completion half.
+  + `function expandSegment(name) {`
+  + ` const keys = Array.from(G.types.keys());`
+  + ` const cands = npCandidates(keys);`
+  + ` const full = [];`
+  + ` for (let i = 0; i < cands.length; i += 1) if (npLastSegment(cands[i]) === name) full.push(cands[i]);`
+  + ` const out = [];`
+  + ` const seen = Object.create(null);`
+  + ` const take = (v) => { if (!seen[v]) { seen[v] = true; out.push(v); } };`
+  + ` for (let i = 0; i < full.length; i += 1) {`
+  + `  if (G.types.has(full[i])) { take(full[i]); continue; }`
+  + `  const kids = npDescendantsOf(full[i], keys);`
+  + `  for (let k = 0; k < kids.length; k += 1) take(kids[k]);`
+  + ` }`
+  + ` return out;`
   + `}`
   + `function onTypes(m) {`
   + ` const idx = m.index;`
@@ -521,25 +546,30 @@ const GRAPH_SCRIPT = `var __SEED = __GRAPH_SEED__;`
   + ` if (G.series.has(name)) { note(name + ' は追加済み'); return; }`
   + ` if (G.types.size === 0) { seriesFor(name); rebuild(); schedule(); vscode.postMessage({ kind: 'graph-add', name: name }); clearErr(); return; }`
   + ` if (G.types.has(name)) { seriesFor(name); rebuild(); schedule(); vscode.postMessage({ kind: 'graph-add', name: name }); clearErr(); return; }`
-  + ` const kids = [];`
-  + ` const prefix = name + '.';`
-  + ` const keys = Array.from(G.types.keys());`
-  + ` for (let i = 0; i < keys.length; i += 1) if (keys[i].lastIndexOf(prefix, 0) === 0) kids.push(keys[i]);`
+  // npIsUnder, not a dotted-only prefix: an array group (`measure...radps`)
+  // must match its `[0..2]` element leaves, or the group adds nothing.
+  // No truncation: the batching layer (watchBatch.ts) coalesces one user
+  // action into a single sidecar restart no matter how many names it
+  // carries, which is why the old MAX_BULK=32 cap stopped being load-bearing
+  // — keeping it meant a 100-member struct silently added 32.
+  + ` let kids = npDescendantsOf(name, Array.from(G.types.keys()));`
+  + ` if (kids.length === 0) kids = expandSegment(name);`
   + ` if (kids.length === 0) { fail('未知の系列: ' + name); return; }`
-  + ` kids.sort();`
-  + ` const take = kids.slice(0, MAX_BULK);`
-  + ` for (let i = 0; i < take.length; i += 1) seriesFor(take[i]);`
+  + ` kids.sort(npComparePath);`
+  + ` for (let i = 0; i < kids.length; i += 1) seriesFor(kids[i]);`
   + ` rebuild();`
   + ` schedule();`
-  + ` for (let i = 0; i < take.length; i += 1) vscode.postMessage({ kind: 'graph-add', name: take[i] });`
+  + ` for (let i = 0; i < kids.length; i += 1) vscode.postMessage({ kind: 'graph-add', name: kids[i] });`
   + ` clearErr();`
-  + ` if (kids.length > take.length) note(take.length + ' 系列を追加 / 未追加 ' + (kids.length - take.length));`
   + `}`
   + `function remove(raw) {`
   + ` const name = String(raw === undefined || raw === null ? '' : raw).trim();`
   + ` if (name === '') { fail('系列名が空です'); return; }`
-  + ` const prefix = name + '.';`
-  + ` const hit = G.order.filter((n) => n === name || n.lastIndexOf(prefix, 0) === 0);`
+  + ` let hit = G.order.filter((n) => npIsUnder(n, name));`
+  + ` if (hit.length === 0) {`
+  + `  const seg = expandSegment(name);`
+  + `  if (seg.length > 0) hit = G.order.filter((n) => { for (let i = 0; i < seg.length; i += 1) if (npIsUnder(n, seg[i])) return true; return false; });`
+  + ` }`
   + ` if (hit.length === 0) { fail('未登録の系列: ' + name); return; }`
   + ` dropSeries(hit);`
   + ` rebuild();`

@@ -334,14 +334,15 @@ def _enumerators(model, enum_node):
     return out
 
 
-def classify_member(model, member):
-    """Type facts of one DW_TAG_member.
+def _type_info(model, declared):
+    """Shared per-node fact extraction for a declared type DIE.
 
-    Returns display name, byte width, signedness, kind, and for containers
-    the node to recurse into. Size/signedness always come from the
-    DW_TAG_base_type at the END of the typedef chain.
+    Both the member path (`classify_member`) and the array-element path
+    (`_array_elem_entries`) build entries from this one helper so the two
+    stay identical. `declared` is the unpeeled DW_AT_type target (possibly
+    a typedef); size/signedness always come from the DW_TAG_base_type at
+    the END of the typedef chain.
     """
-    declared = model.resolve(member.get("type"))
     core = peel(model, declared)
     info = {
         "type": _display_type(model, declared),
@@ -376,6 +377,13 @@ def classify_member(model, member):
         # Other arrays are containers (spec 3.1): browsable, never polled.
         info["kind"] = "array"
         info["size"] = count * _leaf_size(elem)
+        if info["size"] <= 0:
+            # Missing/zero DW_AT_byte_size anywhere in the chain: fall back
+            # to the array DIE's own span, else keep 0 rather than guessing.
+            # The stride helper below applies the same rule per dimension.
+            arr_bytes = _leaf_size(core)
+            if arr_bytes > 0:
+                info["size"] = arr_bytes
         info["length"] = count
         info["container"] = core
         return info
@@ -409,6 +417,225 @@ def classify_member(model, member):
     info["size"] = _leaf_size(core)
     info["signed"] = _is_signed_encoding(core.get("encoding"))
     return info
+
+
+def classify_member(model, member):
+    """Type facts of one DW_TAG_member.
+
+    Returns display name, byte width, signedness, kind, and for containers
+    the node to recurse into. Size/signedness always come from the
+    DW_TAG_base_type at the END of the typedef chain. Accepts a DIE-like
+    mapping with only a `type` key (no DW_AT_name, no location): the
+    catalog root synthesizes `{"type": type_ref}` for globals.
+    """
+    declared = model.resolve(member.get("type"))
+    return _type_info(model, declared)
+
+
+def _node_entry(segment, path, off_abs, base, info):
+    """One tree node dict from shared type facts; path is always full."""
+    entry = {
+        "name": segment,
+        "path": path,
+        "type": info["type"],
+        "kind": info["kind"],
+        "size": info["size"],
+        "signed": info["signed"],
+        "address": f"0x{base + off_abs:08x}",
+        "offset": off_abs,
+    }
+    if info["length"] is not None:
+        entry["length"] = info["length"]
+    if info["enumerators"]:
+        entry["enumerators"] = info["enumerators"]
+    return entry
+
+
+def _array_strides(array_node, dims, elem_info):
+    """Per-dimension byte strides, outer first; [0]*n when unknowable."""
+    n = len(dims)
+    if n == 0 or any(d <= 0 for d in dims):
+        return [0] * n
+    arr_bytes = _leaf_size(array_node)
+    if arr_bytes > 0:
+        # Authoritative DWARF span first: peel one dimension at a time so a
+        # flat float[2][3] (24 bytes) yields row stride 12 then elem stride 4.
+        rem = arr_bytes
+        top_down = []
+        ok = True
+        for d in dims:
+            if d <= 0 or rem % d != 0:
+                ok = False
+                break
+            step = rem // d
+            if step <= 0:
+                ok = False
+                break
+            top_down.append(step)
+            rem = step
+        if ok:
+            return top_down
+    # Fallback without guessing: innermost width times the suffix product.
+    # For a nested outer level the element size already spans the inner
+    # array, and dims[1:] is empty, so this degrades to just that span.
+    inner = elem_info.get("size") or 0
+    if inner <= 0:
+        return [0] * n
+    strides = [0] * n
+    prod = 1
+    for i in range(n - 1, -1, -1):
+        strides[i] = inner * prod
+        prod *= dims[i]
+    return strides
+
+
+def _innermost_declared(model, array_node):
+    """Ultimate non-array element declaration below nested array DIEs."""
+    cur = model.resolve(array_node.get("type"))
+    seen = 0
+    while seen < 16:
+        core = peel(model, cur)
+        if core is None or core.get("tag") != "DW_TAG_array_type":
+            return cur
+        cur = model.resolve(core.get("type"))
+        seen += 1
+    return cur
+
+
+def _flat_array_children(model, dims, strides, path, off_abs, base, leaves,
+                         ultimate_declared, ultimate_info):
+    """Children for a flat dimension list; intermediates are array groups."""
+    children = []
+    base_display = _display_type(model, ultimate_declared)
+    for i in range(dims[0]):
+        segment = f"[{i}]"
+        elem_path = f"{path}[{i}]"
+        elem_off = off_abs + i * strides[0]
+        if len(dims) == 1:
+            entry = _node_entry(segment, elem_path, elem_off, base,
+                                ultimate_info)
+            if ultimate_info["container"] is not None:
+                # Array of structs: reuse the single member walker so
+                # bitfield re-anchoring and offsets thread through untouched.
+                entry["children"] = _walk_members(
+                    model, ultimate_info["container"], elem_path, elem_off,
+                    base, leaves)
+            else:
+                entry["children"] = []
+                leaves.append(_leaf_entry(elem_path, elem_off, entry))
+            children.append(entry)
+        else:
+            # Intermediate row: same keys as any group node so the sidebar
+            # renders it and the graph panel resolves path without joining.
+            remaining = dims[1:]
+            count = 1
+            for d in remaining:
+                count *= d
+            row_info = {
+                "type": base_display + "".join(f"[{d}]" for d in remaining),
+                "kind": "array",
+                "size": strides[0],
+                "signed": False,
+                "length": count,
+                "enumerators": None,
+            }
+            entry = _node_entry(segment, elem_path, elem_off, base, row_info)
+            entry["children"] = _flat_array_children(
+                model, remaining, strides[1:], elem_path, elem_off, base,
+                leaves, ultimate_declared, ultimate_info)
+            children.append(entry)
+    return children
+
+
+def _array_elem_entries(model, array_node, path, off_abs, base, leaves):
+    """Expand one array DIE into per-element child nodes.
+
+    Sibling of _walk_members: the member walker calls here when an array
+    member's container is an array DIE (whose children are subranges, never
+    members, so the member walker alone would yield nothing). Multi-dim
+    arrays nest with the leftmost dimension outermost; a struct element
+    recurses back into _walk_members. Zero-length or unbounded arrays yield
+    no children and never raise. Callers keep the array node itself as a
+    group and never append it to leaves.
+    """
+    dims = _array_dims(model, array_node)
+    if not dims or any(d <= 0 for d in dims):
+        return []
+    total = 1
+    for d in dims:
+        total *= d
+    if total <= 0:
+        return []
+    elem_declared = model.resolve(array_node.get("type"))
+    elem_info = _type_info(model, elem_declared)
+    strides = _array_strides(array_node, dims, elem_info)
+    if any(s <= 0 for s in strides):
+        return []
+    if elem_info["kind"] == "array" and elem_info["container"] is not None:
+        # Nested array DIEs (outer [2] whose element is inner [3]): one
+        # outer loop, each cell a group holding the inner expansion.
+        inner = elem_info["container"]
+        if len(dims) == 1:
+            children = []
+            for i in range(dims[0]):
+                segment = f"[{i}]"
+                elem_path = f"{path}[{i}]"
+                elem_off = off_abs + i * strides[0]
+                entry = _node_entry(segment, elem_path, elem_off, base,
+                                    elem_info)
+                entry["size"] = strides[0]
+                entry["children"] = _array_elem_entries(
+                    model, inner, elem_path, elem_off, base, leaves)
+                children.append(entry)
+            return children
+        # Flat outer dims on top of a nested inner array: expand the outer
+        # prefix flatly, each prefix cell rooting one inner expansion.
+        inner_dims = _array_dims(model, inner)
+        ultimate = _innermost_declared(model, array_node)
+        ultimate_info = _type_info(model, ultimate)
+
+        def _outer(depth, cur_path, cur_off):
+            kids = []
+            for i in range(dims[depth]):
+                segment = f"[{i}]"
+                elem_path = f"{cur_path}[{i}]"
+                elem_off = cur_off + i * strides[depth]
+                if depth == len(dims) - 1:
+                    entry = _node_entry(segment, elem_path, elem_off, base,
+                                        elem_info)
+                    entry["size"] = strides[depth]
+                    entry["children"] = _array_elem_entries(
+                        model, inner, elem_path, elem_off, base, leaves)
+                    kids.append(entry)
+                else:
+                    tail = dims[depth + 1:] + list(inner_dims)
+                    base_display = _display_type(model, ultimate)
+                    count = 1
+                    for d in tail:
+                        count *= d
+                    row_info = {
+                        "type": base_display + "".join(f"[{d}]" for d in tail),
+                        "kind": "array",
+                        "size": strides[depth],
+                        "signed": False,
+                        "length": count,
+                        "enumerators": None,
+                    }
+                    entry = _node_entry(segment, elem_path, elem_off, base,
+                                        row_info)
+                    entry["children"] = _outer(depth + 1, elem_path, elem_off)
+                    kids.append(entry)
+            return kids
+
+        return _outer(0, path, off_abs)
+    ultimate = elem_declared
+    if len(dims) > 1:
+        # Flat multi-dim DIE: the immediate element already is the innermost
+        # scalar/struct, so expand every dimension here with row groups.
+        ultimate = elem_declared
+    ultimate_info = _type_info(model, ultimate)
+    return _flat_array_children(model, dims, strides, path, off_abs, base,
+                                leaves, ultimate, ultimate_info)
 
 
 def _member_offset(member):
@@ -488,18 +715,7 @@ def _walk_members(model, node, path, off_abs, base, leaves):
         child_off = off_abs + loc
         child_path = f"{path}.{segment}" if path else segment
         info = classify_member(model, member)
-        entry = {
-            "name": segment,
-            "path": child_path,
-            "type": info["type"],
-            "kind": info["kind"],
-            "size": info["size"],
-            "signed": info["signed"],
-            "address": f"0x{base + child_off:08x}",
-            "offset": child_off,
-        }
-        if info["length"] is not None:
-            entry["length"] = info["length"]
+        entry = _node_entry(segment, child_path, child_off, base, info)
         if bits is not None:
             bit_size, abs_bits = bits
             within = abs_bits % 8
@@ -507,9 +723,14 @@ def _walk_members(model, node, path, off_abs, base, leaves):
             entry["size"] = max(1, math.ceil((within + bit_size) / 8))
             entry["bit_size"] = bit_size
             entry["bit_offset"] = within
-        if info["enumerators"]:
-            entry["enumerators"] = info["enumerators"]
-        if info["container"] is not None:
+        if info["kind"] == "array" and info["container"] is not None:
+            # Array DIE children are subranges, never members: the shared
+            # member walker would return [] and drop every element, so fan
+            # out here. The array node stays a group and never joins leaves.
+            entry["children"] = _array_elem_entries(
+                model, info["container"], child_path, child_off, base,
+                leaves)
+        elif info["container"] is not None:
             entry["children"] = _walk_members(model, info["container"],
                                               child_path, child_off,
                                               base, leaves)
@@ -1186,7 +1407,14 @@ def _catalog_root(model, type_ref, addr, sym_name, display):
         entry["length"] = info["length"]
     if info["enumerators"]:
         entry["enumerators"] = info["enumerators"]
-    if info["container"] is not None:
+    if info["kind"] == "array" and info["container"] is not None:
+        # A global array (e.g. noinit_blob) has the same subrange-only shape
+        # as a member array, so it needs the element fan-out, not the member
+        # walker. Struct globals still go through _walk_members, which fans
+        # out any arrays nested inside them.
+        entry["children"] = _array_elem_entries(
+            model, info["container"], sym_name, 0, addr, leaves)
+    elif info["container"] is not None:
         entry["children"] = _walk_members(model, info["container"], sym_name,
                                           0, addr, leaves)
     else:

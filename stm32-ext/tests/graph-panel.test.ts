@@ -795,7 +795,16 @@ describe("graph panel name completion", () => {
     expect(values).toContain("drive");
     expect(values).toContain("drive.controller");
     expect(values).toContain("drive.emergency");
-    expect([...values].sort()).toEqual(values);
+    // Groups precede leaves: when the option list is truncated, the names that
+    // survive are the ones carrying a whole subtree. Plain lexicographic order
+    // is deliberately not the contract any more.
+    const isGroup = (v) => values.some((o) => o !== v && (o.startsWith(v + ".") || o.startsWith(v + "[")));
+    const firstLeaf = values.findIndex((v) => !isGroup(v));
+    for (let i = 0; i < values.length && firstLeaf >= 0; i += 1) {
+      if (isGroup(values[i])) {
+        expect(i, values[i] + " is a group and must precede every leaf").toBeLessThan(firstLeaf);
+      }
+    }
   });
 
   it("a group from the list adds all of its leaves", () => {
