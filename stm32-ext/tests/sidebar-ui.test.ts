@@ -30,23 +30,18 @@ describe("sidebar: font size is a user setting, and the columns follow it", () =
     }
   });
 
-  it("sizes the value and op columns from that variable, not a fixed px", () => {
-    // A hardcoded px width is correct for exactly one font size and silently
-    // ellipsises a hex value or clips the rightmost button at any other. The
-    // width must be an absolute calc over the injected size.
+  it("no table column CSS remains now the table lives in the tab", () => {
+    // The 変数 table moved to the editor-area tab (variablePanel): the
+    // sidebar keeps only status + controls + the tab link, so fixed column
+    // vars and cell-width rules would be dead weight.
     const css = renderSidebar(undefined as never, 15);
-    expect(css).toMatch(/--valw:calc\(var\(--stm32ext-ui-font/);
-    expect(css).toMatch(/--opw:calc\(var\(--stm32ext-ui-font/);
-    expect(css).not.toMatch(/td\.v\{width:\d+px/);
-    expect(css).not.toMatch(/td\.o\{width:\d+px/);
-    // th and td must consume the SAME variable, or table-layout:fixed (which
-    // takes the <thead> value) silently wins with the wrong one.
-    expect(css).toMatch(/th:nth-child\(2\)\{width:var\(--valw\)\}/);
-    expect(css).toMatch(/td\.v\{width:var\(--valw\)/);
-    expect(css).toMatch(/th:nth-child\(3\)\{width:var\(--wrw\)\}/);
-    expect(css).toMatch(/td\.w\{width:var\(--wrw\)/);
-    expect(css).toMatch(/th:nth-child\(4\)\{width:var\(--opw\)\}/);
-    expect(css).toMatch(/td\.o\{width:var\(--opw\)/);
+    expect(css).not.toContain("table.live");
+    expect(css).not.toContain("--valw");
+    expect(css).not.toContain("--wrw");
+    expect(css).not.toContain("--opw");
+    expect(css).not.toContain("td.v");
+    expect(css).not.toContain("td.o");
+    expect(css).not.toContain("td.w");
   });
 
   it("sizes the text from the SAME variable the columns are sized from", () => {
@@ -627,447 +622,16 @@ function realTree(): { tree: Record<string, unknown>; index: Record<string, unkn
   }
 }
 
-describe("sidebar: the tree is actually readable (real resolver shape)", () => {
-  it("every leaf row shows its name — the 変数 column is never blank", () => {
-    const b = withTree(boot(), realTree());
-    const rows = b.$$('tr[data-kind="leaf"]');
-    expect(rows.length).toBeGreaterThan(30);
-    const blank = rows.filter((r) => (r.children[0]?.textContent ?? "").trim() === "");
-    expect(blank.map((r) => r.dataset.name)).toEqual([]);
-  });
-
-  it("a leaf shows its own name, with the full dotted path in the tooltip", () => {
-    const b = withTree(boot(), realTree());
-    const row = b.$('tr[data-name="sys.m3"]');
-    expect(row?.children[0].textContent).toBe("m3");
-    expect(row?.children[0].title).toContain("sys.m3");
-  });
-
-  it("a nameless type shows only the member name, never 'struct <anonymous>'", () => {
-    const b = withTree(boot(), realTree());
-    const texts = b.$$('tr[data-kind="group"]').map((r) => r.children[0].textContent);
-    expect(texts.some((t) => t.includes("<anonymous>"))).toBe(false);
-    expect(texts).toContain("sys");
-    // A genuinely named type is still worth showing.
-    expect(texts).toContain("controller : Controller");
-    expect(texts).toContain("debug : DebugGlobal");
-  });
-
-  it("a sample updates the value of an already-labelled tree row", () => {
-    const b = withTree(boot(), realTree());
-    b.send({ kind: "live-sample", samples: [sample("sys.m0", "0x00000508")] });
-    const row = b.$('tr[data-name="sys.m0"]');
-    expect(row?.children[0].textContent).toBe("m0");
-    expect(row?.children[1].textContent).toBe("1288");
-  });
-
-  it("a variable seen before live-types is still labelled with its last segment", () => {
-    const b = boot();
-    b.send({ kind: "live-sample", samples: [sample("legacy.var", "0x0000002a")] });
-    const row = b.$('tr[data-name="legacy.var"]');
-    expect(row?.children[0].textContent).toBe("var");
-    expect(row?.children[0].title).toBe("legacy.var");
-  });
-
-  it("a node's own `path` wins over re-concatenating its name", () => {
-    // If the renderer rebuilt paths by concatenation, a node whose `name`
-    // already contains a dot would be keyed `sys.sys.loop_hz`: the row would
-    // look right, but add/remove/write would target a symbol that does not
-    // exist and still report success.
-    const b = boot();
-    b.send({
-      kind: "live-types",
-      tree: {
-        name: "debug", type: "DebugGlobal", kind: "struct", size: 976, path: "",
-        children: [{
-          name: "sys", path: "sys", type: "struct <anonymous>", kind: "struct", size: 16,
-          children: [{ name: "sys.loop_hz", path: "sys.loop_hz", type: "uint32_t", kind: "scalar", size: 4, children: [] }],
-        }],
-      },
-      index: { "sys.loop_hz": { size: 4, kind: "scalar", type: "uint32_t" } },
-    });
-    expect(b.$('tr[data-name="sys.sys.loop_hz"]')).toBeNull();
-    const row = b.$('tr[data-name="sys.loop_hz"]');
-    expect(row).not.toBeNull();
-    // The label is the path's LAST SEGMENT even when `name` carries the whole
-    // dotted path: rendering the full path would overflow a 150px column.
-    expect(row?.children[0].textContent).toBe("loop_hz");
-    // ...while the row keeps the full path for every add/remove/write.
-    expect(row?.children[0].title).toBe("sys.loop_hz — uint32_t");
-    b.send({ kind: "live-sample", samples: [sample("sys.loop_hz", "0x00000508")] });
-    expect(b.$('tr[data-name="sys.loop_hz"]')?.children[1].textContent).toBe("1288");
-  });
-
-  it("an array node is listed but not counted as a watchable leaf", () => {
-    // Measured on the real ELF: 327 leaf nodes, 324 symbols. The 3 extra are
-    // arrays (`float[4]`, `struct [3]`) which resolve to no scalar symbol, so
-    // they can never show a value. Counting them inflated the group's leaf
-    // total past anything the user could actually watch.
-    const b = boot();
-    b.send({
-      kind: "live-types",
-      tree: {
-        name: "debug",
-        type: "DebugGlobal",
-        kind: "struct",
-        children: [{
-          name: "periph",
-          type: "struct <anonymous>",
-          kind: "struct",
-          children: [
-            { name: "fdcan", path: "periph.fdcan", type: "struct <anonymous>[3]", kind: "array", size: 24, children: [] },
-            { name: "loop", path: "periph.loop", type: "uint32_t", kind: "scalar", size: 4, children: [] },
-          ],
-        }],
-      },
-      index: { "periph.loop": { size: 4, kind: "scalar", type: "uint32_t" } },
-    });
-    const group = b.$('tr[data-path="periph"]');
-    // The array is still in the catalogue…
-    expect(b.$('tr[data-name="periph.fdcan"]')).not.toBeNull();
-    expect(b.$('tr[data-name="periph.fdcan"]')?.children[0].textContent).toBe("fdcan");
-    // …but it is dimmed, explained, and carries no watch button that could only fail.
-    const arr = b.$('tr[data-name="periph.fdcan"]');
-    expect(arr?.dataset.pollable).toBe("0");
-    expect(arr?.children[0].title).toContain("配列");
-    expect(arr?.children[3].textContent).toBe("—");
-    // An array resolves to no scalar symbol, so the write input is stripped too.
-    expect(arr?.children[2].textContent).toBe("");
-    // The group leaf count covers only what can actually be watched.
-    expect(group?.children[1].textContent).toBe("1件");
-  });
-});
 
 // --------------------------------------------------------------------- tests
-describe("sidebar: typed value decode (spec 3.4)", () => {
-  const cases: [string, string, string][] = [
-    ["sys.loop_hz", "0xffffffff", "-1"],
-    ["sys.loop_hz", "0x00000508", "1288"],
-    ["sys.bias", "0x3f800000", "1.00000"],
-    ["sys.bias", "0xc0490fdb", "-3.14159"],
-    ["sys.stamp_ns", "0xffffffffffffffff", "18446744073709551615"],
-    ["sys.tag", "0x004e5552", "RUN"],
-    ["drive.mode", "0x00000002", "MODE_FOLLOW"],
-    ["drive.mode", "0x00000009", "9 (unknown)"],
-    ["drive.emergency.req", "0x01", "true"],
-    ["drive.emergency.req", "0x00", "false"],
-    ["drive.controller.up", "0xff000001", "true"],
-    ["drive.motor_timeout", "0x01", "1"],
-  ];
-  for (const [name, hex, want] of cases) {
-    it(`${name} ${hex} renders "${want}", never as a raw unsigned int`, () => {
-      const b = withTree(boot());
-      b.send({ kind: "live-sample", samples: [sample(name, hex)] });
-      const tr = b.$(`[data-name="${name}"]`);
-      expect(tr).not.toBeNull();
-      expect(tr?.children[1].textContent).toBe(want);
-    });
-  }
 
-  it("a 1-byte bool is never shown as 0xff000001 garbage", () => {
-    const b = withTree(boot());
-    b.send({ kind: "live-sample", samples: [sample("drive.controller.up", "0x01"), sample("drive.controller.down", "0x00")] });
-    expect(b.$('[data-name="drive.controller.up"]')?.children[1].textContent).toBe("true");
-    expect(b.$('[data-name="drive.controller.down"]')?.children[1].textContent).toBe("false");
-  });
 
-  it("an unknown type falls back to raw hex with a 型不明 note", () => {
-    const b = boot();
-    b.send({ kind: "live-sample", samples: [sample("mystery.word", "0x00001234")] });
-    expect(b.$('[data-name="mystery.word"]')?.children[1].textContent).toBe("0x00001234 型不明");
-  });
 
-  it("a bitfield leaf masks with the keys the host actually sends (bitSize/bitOffset)", () => {
-    // extension.ts:505-510 builds the index from elfResolver's LeafMeta, which
-    // spells these bitSize / bitOffset (src/live/poller.ts:74-76). Asserting a
-    // snake_case payload here is what let this bug through a green suite.
-    const meta = { size: 8, kind: "bitfield", type: "uint64_t", signed: false, bitSize: 2, bitOffset: 1 };
-    const tree = {
-      name: "DebugGlobal", type: "DebugGlobal", kind: "struct", size: 8,
-      children: [leaf({ path: "flags", ...meta })],
-    };
-    const b = boot();
-    b.send({ kind: "live-types", tree, index: { flags: meta } });
-    b.send({ kind: "live-sample", samples: [sample("flags", "0x000000000000000a")] });
-    // (10 >> 1) & 3 === 1. A non-bitfield decode would have shown the whole 10.
-    expect(b.$('[data-name="flags"]')?.children[1].textContent).toBe("1");
-    // 0xff >> 1 & 3 === 3; a non-bitfield decode would have shown the whole 255.
-    b.send({ kind: "live-sample", samples: [sample("flags", "0x00000000000000ff")] });
-    expect(b.$('[data-name="flags"]')?.children[1].textContent).toBe("3");
-    b.send({ kind: "live-sample", samples: [sample("flags", "0x0000000000000000")] });
-    expect(b.$('[data-name="flags"]')?.children[1].textContent).toBe("0");
-  });
 
-  it("no prompt-based write survives: the input is the only path and it starts empty", () => {
-    // Two paths for one operation means one of them rots. The ✎ prompt had to
-    // be seeded from lastRaw, which is a value the row may not even be showing
-    // any more; a seed in the input would have the same defect. Empty by
-    // default means Enter can only ever send what the user just typed.
-    const b = withTree(boot());
-    b.send({ kind: "live-sample", samples: [sample("sys.bias", "0x3f800000")] });
-    expect(b.$('[data-op="write"]')).toBeNull();
-    const inp = b.$('[data-name="sys.bias"] [data-write]');
-    expect(inp?.value).toBe("");
-    expect(b.prompts.length).toBe(0);
-  });
-});
 
-describe("sidebar: the 書込 column writes a leaf value with Enter", () => {
-  const input = (b: Booted, name: string): StubEl | null => b.$(`[data-name="${name}"] [data-write]`);
-
-  it("puts one input between 値 and 操作 on every leaf row, and none on a group row", () => {
-    const b = withTree(boot());
-    const tr = b.$('[data-name="sys.loop_hz"]') as StubEl;
-    // 変数 | 値 | 書込 | 操作
-    expect(tr.children.length).toBe(4);
-    expect(tr.children[2].getAttribute("class")).toBe("w");
-    expect(tr.children[2].querySelector("[data-write]")).not.toBeNull();
-    // The ops moved to the 4th cell and lost the ✎ glyph.
-    expect(tr.children[3].querySelectorAll("[data-op]").map((o) => o.dataset.op)).toEqual(["add", "remove"]);
-    // A group row is a catalogue node: there is no scalar value to write.
-    expect((b.$('[data-name="drive"]') as StubEl).children.length).toBe(3);
-    // Every leaf of the tree has one, so a value never needs a round-trip to
-    // become writable.
-    expect(b.$$("[data-write]").length).toBe(b.$$('[data-kind="leaf"]').length);
-  });
-
-  it("Enter posts live-write for that row; Esc reverts and blur commits nothing", () => {
-    // At 200Hz a repaint lands between two keystrokes, so anything that commits
-    // on blur (or on 'input') can send a half-typed number. Enter is the only
-    // commit, and the modal confirm downstream is the second gate.
-    const b = withTree(boot());
-    const inp = input(b, "drive.kp") as StubEl;
-    inp.value = "2.5";
-    inp.dispatchEvent({ type: "keydown", key: "Enter", target: inp });
-    expect(b.posted.at(-1)).toEqual({ kind: "live-write", name: "drive.kp", value: "2.5" });
-
-    b.posted.length = 0;
-    inp.value = "  ";
-    inp.dispatchEvent({ type: "keydown", key: "Enter", target: inp });
-    inp.value = "9";
-    inp.dispatchEvent({ type: "keydown", key: "Escape", target: inp });
-    expect(inp.value).toBe("");
-    inp.value = "9";
-    inp.blur();
-    inp.dispatchEvent({ type: "blur", target: inp });
-    inp.dispatchEvent({ type: "keydown", key: "a", target: inp });
-    expect(b.posted.length).toBe(0);
-  });
-
-  it("a sample never overwrites the text being typed into the focused input", () => {
-    // The value cell freezes for as long as the row's input holds focus: at
-    // 200Hz the live value would otherwise overwrite the text — and the value
-    // the user is typing against — several times a second.
-    const b = withTree(boot());
-    b.send({ kind: "live-sample", samples: [sample("sys.loop_hz", "0x00000064")] });
-    const inp = input(b, "sys.loop_hz") as StubEl;
-    inp.focus();
-    inp.value = "12";
-    b.send({ kind: "live-sample", samples: [sample("sys.loop_hz", "0x000000c8")] });
-    expect(inp.value).toBe("12");
-    expect((b.$('[data-name="sys.loop_hz"]') as StubEl).children[1].textContent).toBe("100");
-    // Focus lost: the next sample repaints as usual.
-    inp.blur();
-    b.send({ kind: "live-sample", samples: [sample("sys.loop_hz", "0x0000012c")] });
-    expect((b.$('[data-name="sys.loop_hz"]') as StubEl).children[1].textContent).toBe("300");
-  });
-
-  it("attributes a result to the row that asked, refused rows included", () => {
-    // A write can be refused six different ways upstream. A single shared line
-    // cannot say WHICH row failed, so the failure has to land on that row or it
-    // is not attributable at all.
-    const b = withTree(boot());
-    b.send({ kind: "live-write-result", name: "drive.kp", ok: false, message: "書き込み失敗: アドレス未解決" });
-    const mark = b.$('[data-name="drive.kp"] .wr') as StubEl;
-    expect(mark.hidden).toBe(false);
-    expect(mark.textContent).toBe("✗");
-    expect(mark.title).toBe("書き込み失敗: アドレス未解決");
-    expect((b.$('[data-name="sys.loop_hz"] .wr') as StubEl).hidden).toBe(true);
-    // ...and the shared line still carries the full text.
-    expect(b.$('[data-testid="live-write-result"]')?.textContent).toBe("書き込み失敗: アドレス未解決");
-    b.send({ kind: "live-write-result", name: "drive.kp", ok: true, message: "drive.kp = 2.50000" });
-    expect(mark.textContent).toBe("✓");
-  });
-});
-
-describe("sidebar: struct tree", () => {
-  it("renders one row per node with the C type name on every struct", () => {
-    const b = withTree(boot());
-    const groups = b.$$('[data-kind="group"]');
-    expect(groups.length).toBe(5); // DebugGlobal, sys, drive, emergency, controller
-    const labels = groups.map((g) => g.children[0].textContent);
-    expect(labels).toContain("drive : DriveState");
-    expect(labels).toContain("controller : Controller");
-  });
-
-  it("a leaf row is keyed by its dotted path and starts unwatched", () => {
-    const b = withTree(boot());
-    const tr = b.$('[data-name="drive.emergency.flag"]');
-    expect(tr?.dataset.kind).toBe("leaf");
-    expect(tr?.dataset.watched).toBe("0");
-  });
-
-  it("collapsing a group hides its subtree and toggles aria-expanded", () => {
-    const b = withTree(boot());
-    const head = b.$('[data-name="drive"] td.n');
-    head?.dispatchEvent({ type: "click", target: head });
-    const group = b.$('[data-name="drive"]');
-    expect(group?.dataset.collapsed).toBe("1");
-    expect(b.$('[data-name="drive.kp"]')?.dataset.hidden).toBe("1");
-    expect(b.$('[data-name="drive.emergency"]')?.dataset.hidden).toBe("1");
-    expect(group?.children[0].getAttribute("aria-expanded")).toBe("false");
-  });
-
-  it("the value cell is keyboard reachable and Enter toggles dec/hex", () => {
-    const b = withTree(boot());
-    b.send({ kind: "live-sample", samples: [sample("sys.loop_hz", "0x00000508")] });
-    const v = b.$('[data-name="sys.loop_hz"] td.v');
-    expect(v?.getAttribute("tabindex")).toBe("0");
-    expect(v?.getAttribute("role")).toBe("button");
-    v?.dispatchEvent({ type: "keydown", key: "Enter", target: v });
-    expect(v?.textContent).toBe("0x00000508");
-    v?.dispatchEvent({ type: "keydown", key: " ", target: v });
-    expect(v?.textContent).toBe("1288");
-  });
-
-  it("the collapse control is keyboard reachable too", () => {
-    const b = withTree(boot());
-    const head = b.$('[data-name="sys"] td.n');
-    expect(head?.getAttribute("tabindex")).toBe("0");
-    head?.dispatchEvent({ type: "keydown", key: "Enter", target: head });
-    expect(b.$('[data-name="sys"]')?.dataset.collapsed).toBe("1");
-  });
-});
-
-describe("sidebar: difference-based rendering", () => {
-  it("a stream of live-sample updates cells in place with no innerHTML rebuild", () => {
-    const b = withTree(boot());
-    b.send({ kind: "live-sample", samples: [sample("sys.loop_hz", "0x00000508")] });
-    const tr = b.$('[data-name="sys.loop_hz"]');
-    const nameCell = tr?.children[0];
-    for (let i = 0; i < 200; i += 1) {
-      b.send({ kind: "live-sample", samples: [sample("sys.loop_hz", "0x00000" + (0x510 + i).toString(16))] });
-    }
-    expect(docStats.innerHtml).toBe(0);
-    expect(b.$('[data-name="sys.loop_hz"]')).toBe(tr);
-    expect(tr?.children[0]).toBe(nameCell);
-    expect(tr?.children[1].textContent).toBe(String(0x510 + 199));
-  });
-
-  it("costs one value-cell write per sample, not four DOM writes", () => {
-    const b = withTree(boot());
-    const names = ["sys.loop_hz", "sys.bias", "drive.motor_timeout", "drive.mode"];
-    b.send({ kind: "live-sample", samples: names.map((n) => sample(n, "0x00000001")) });
-    const rows = names.map((n) => b.$(`[data-name="${n}"]`));
-    const before = rows.map((r) => r?.children[1].__w ?? 0);
-    const nameBefore = rows.map((r) => r?.children[0].__w ?? 0);
-    for (let i = 0; i < 100; i += 1) {
-      b.send({ kind: "live-sample", samples: names.map((n) => sample(n, "0x0000000" + (i % 9))) });
-    }
-    expect(rows.map((r) => r?.children[1].__w ?? 0).map((w, i) => w - before[i])).toEqual([100, 100, 100, 100]);
-    // The name cell never changes after creation, so it must never be rewritten.
-    expect(rows.map((r) => r?.children[0].__w ?? 0).map((w, i) => w - nameBefore[i])).toEqual([0, 0, 0, 0]);
-  });
-
-  it("an unknown variable arriving before live-types still gets a row", () => {
-    const b = boot();
-    b.send({ kind: "live-sample", samples: [sample("legacy.var", "0x0000002a")] });
-    expect(b.$('[data-name="legacy.var"]')).not.toBeNull();
-    expect(b.$('[data-name="legacy.var"]')?.children[1].textContent).toBe("0x0000002a 型不明");
-  });
-
-  it("a sample for a name outside the type tree is ignored, not invented as a row", () => {
-    const b = withTree(boot());
-    b.send({ kind: "live-sample", samples: [sample("not.in.tree", "0x00000001")] });
-    expect(b.$('[data-name="not.in.tree"]')).toBeNull();
-  });
-});
-
-describe("sidebar: bulk add (D4)", () => {
-  it("adds every leaf of a group, with no cap", () => {
-    // It used to stop at 32 and report the rest as 未追加. The host polls the
-    // whole watchlist now, so slicing here only produced a watchlist that
-    // looked complete and quietly was not: the user added the group, and 153
-    // of its leaves were never watched.
-    const b = withTree(boot(), bigTree("periph", 185));
-    const add = b.$('[data-name="periph"] [data-op="add"]');
-    add?.dispatchEvent({ type: "click", target: add });
-    const names = b.posted.filter((m) => m.kind === "live-add").at(-1)?.names as string[];
-    expect(names).toHaveLength(185);
-    expect(names[0]).toBe("periph.leaf0");
-    expect(names.at(-1)).toBe("periph.leaf184");
-    const note = b.$('[data-testid="live-add-note"]')?.textContent ?? "";
-    expect(note).toBe("periph : Periph: 185 件追加");
-    expect(note).not.toContain("上限");
-    expect(note).not.toContain("未追加");
-  });
-
-  it("says how many were added", () => {
-    const b = withTree(boot(), bigTree("periph", 5));
-    const add = b.$('[data-name="periph"] [data-op="add"]');
-    add?.dispatchEvent({ type: "click", target: add });
-    const note = b.$('[data-testid="live-add-note"]')?.textContent ?? "";
-    expect(note).toBe("periph : Periph: 5 件追加");
-  });
-
-  it("adding the root subtree adds every leaf too", () => {
-    const b = withTree(boot(), bigTree("periph", 185));
-    const add = b.$('[data-name="DebugGlobal"] [data-op="add"]');
-    add?.dispatchEvent({ type: "click", target: add });
-    const names = b.posted.filter((m) => m.kind === "live-add").at(-1)?.names as string[];
-    expect(names).toHaveLength(185);
-  });
-});
-
-describe("sidebar: removal by prefix", () => {
-  it("live-remove-names on a group drops every leaf row under it from the DOM", () => {
-    const b = withTree(boot(), bigTree("periph", 6));
-    b.send({ kind: "live-watchlist", names: ["periph.leaf0", "periph.leaf1"] });
-    expect(b.$$('[data-kind="leaf"][data-name^="periph."]').length).toBe(6);
-    const rm = b.$('[data-name="periph"] [data-op="remove"]');
-    rm?.dispatchEvent({ type: "click", target: rm });
-    expect(b.posted.at(-1)).toEqual({ kind: "live-remove-names", names: ["periph"] });
-    expect(b.$$('[data-kind="leaf"][data-name^="periph."]').length).toBe(0);
-  });
-
-  it("removing one leaf only drops that leaf", () => {
-    const b = withTree(boot());
-    const rm = b.$('[data-name="drive.motor_timeout"] [data-op="remove"]');
-    rm?.dispatchEvent({ type: "click", target: rm });
-    expect(b.posted.at(-1)).toEqual({ kind: "live-remove-names", names: ["drive.motor_timeout"] });
-    expect(b.$('[data-name="drive.motor_timeout"]')).toBeNull();
-    expect(b.$('[data-name="drive.mode"]')).not.toBeNull();
-  });
-
-  it("a removed leaf stops receiving values and the empty state returns", () => {
-    const b = withTree(boot(), bigTree("periph", 2));
-    for (const n of ["periph.leaf0", "periph.leaf1"]) {
-      const rm = b.$(`[data-name="${n}"] [data-op="remove"]`);
-      rm?.dispatchEvent({ type: "click", target: rm });
-    }
-    b.send({ kind: "live-sample", samples: [sample("periph.leaf0", "0x00000009")] });
-    expect(b.$('[data-name="periph.leaf0"]')).toBeNull();
-    expect(b.$('[data-testid="live-empty"]')?.hidden).toBe(false);
-  });
-
-  it("the watchlist marks rows and never resurrects a removed one", () => {
-    const b = withTree(boot(), bigTree("periph", 3));
-    b.send({ kind: "live-watchlist", names: ["periph.leaf1"] });
-    expect(b.$('[data-name="periph.leaf0"]')?.dataset.watched).toBe("0");
-    expect(b.$('[data-name="periph.leaf1"]')?.dataset.watched).toBe("1");
-    expect(b.$('[data-name="periph"]')?.children[1].textContent).toBe("3件");
-  });
-});
 
 describe("sidebar: states and affordances", () => {
-  it("the table has a thead and an empty state that tracks the row count", () => {
-    const b = boot();
-    expect(b.$$('[data-testid="live-tree"] th').map((t) => t.textContent)).toEqual(["変数", "値", "書込", "操作"]);
-    expect(b.$('[data-testid="live-empty"]')?.hidden).toBe(false);
-    withTree(b);
-    expect(b.$('[data-testid="live-empty"]')?.hidden).toBe(true);
-  });
-
+  
   it("pause is one toggle and is visible on screen in both states", () => {
     const b = withTree(boot());
     b.send({ kind: "live-status", state: "running" });
@@ -1214,17 +778,39 @@ describe("sidebar: states and affordances", () => {
     expect(b.posted.at(-1)).toEqual({ kind: "project-select", dir: "/fw/b" });
   });
 
-  it("drop, unresolved, write result and log all land as differences", () => {
-    const b = withTree(boot());
+  it("drop and log land as differences, and removed nodes stay silent", () => {
+    const b = boot();
     b.send({ kind: "live-drop", summary: "ticks=790 collected=787" });
     expect(b.$('[data-testid="live-drop-rate"]')?.textContent).toBe("ticks=790 collected=787");
     b.send({ kind: "live-unresolved", names: ["sys.gone"] });
-    expect(b.$('[data-testid="live-unresolved"]')?.textContent).toBe("未解決 sys.gone");
+    expect(b.$('[data-testid="live-unresolved"]')).toBeNull();
     b.send({ kind: "live-write-result", message: "書き込ました" });
-    expect(b.$('[data-testid="live-write-result"]')?.textContent).toBe("書き込ました");
+    expect(b.$('[data-testid="live-write-result"]')).toBeNull();
     b.send({ kind: "log-append", lines: ["[live] started", "[live] tick"] });
     expect(b.$('[data-testid="log-tail"]')?.textContent).toContain("[live] started");
     expect(docStats.innerHtml).toBe(0);
+  });
+
+  it("live section is status + controls + tab link, and stray table messages stay silent", () => {
+    const b = boot();
+    const section = b.$('[data-section="live"]');
+    expect(section).not.toBeNull();
+    for (const id of ["live-state", "live-source", "live-hz", "live-drop-rate",
+      "live-start", "live-stop", "live-pause-toggle", "live-reconnect",
+      "live-add-watch", "live-export-csv", "variable-open",
+      "live-why", "live-status-text", "live-detail"]) {
+      expect(b.$(`[data-testid="${id}"]`)).not.toBeNull();
+    }
+    for (const id of ["live-write-result", "live-unresolved", "live-search",
+      "live-tree", "live-rows", "live-empty", "live-add-note"]) {
+      expect(b.$(`[data-testid="${id}"]`)).toBeNull();
+    }
+    expect(b.$('[data-testid="variable-open"]')?.getAttribute("href")).toBe("command:stm32ext.showVariables");
+    b.send({ kind: "live-types", tree: TYPE_TREE.tree, index: TYPE_TREE.index });
+    b.send({ kind: "live-sample", samples: [sample("sys.loop_hz", "0x00000064")] });
+    b.send({ kind: "live-unresolved", names: ["sys.gone"] });
+    b.send({ kind: "live-write-result", message: "書き込ました" });
+    expect(b.$('[data-testid="live-status-text"]')?.textContent).toBe("");
   });
 
   it("the log offers clear, a filter that is reported, and an Output link", () => {
@@ -1316,18 +902,7 @@ describe("sidebar: graph section is a launcher plus a series list, not a second 
     expect(b.posted.at(-1)).toEqual({ kind: "graph-remove", name: "sys.loop_hz" });
   });
 
-  it("a single leaf row can be added to the watch, not only whole groups", () => {
-    // The leaf row used to carry only 変更 and 除外, so a single variable could
-    // be removed but never added from the tree: the only route was the
-    // QuickPick, or adding the entire parent group.
-    const b = withTree(boot());
-    const add = b.$('[data-name="drive.motor_timeout"] [data-op="add"]');
-    expect(add).not.toBeNull();
-    add?.dispatchEvent({ type: "click", target: add });
-    // Exactly that one variable, not its siblings and not its parent group.
-    expect(b.posted.at(-1)).toEqual({ kind: "live-add", names: ["drive.motor_timeout"] });
-  });
-
+  
   it("the graph input offers completion for leaves and struct groups", () => {
     const b = withTree(boot());
     const values = b.$$('[data-testid="graph-names"] option').map((o) => o.getAttribute("value"));
@@ -1390,141 +965,6 @@ describe("sidebar: graph section is a launcher plus a series list, not a second 
   });
 });
 
-describe("sidebar: live-catalog browse and search", () => {
-  const CATALOG = [
-    {
-      name: "_ZN2tr10hardwares4stm324i2c16bridge6handleE",
-      path: "i2c1.handle",
-      address: "0x20000000",
-      size: 4,
-      type: "uint32_t",
-      kind: "scalar",
-      display: "tr::hardwares::stm32::i2c1::bridge::handle",
-    },
-    {
-      name: "cfg",
-      path: "cfg",
-      address: "0x20000100",
-      size: 8,
-      type: "Cfg",
-      kind: "struct",
-      display: "tr::cfg",
-      children: [
-        {
-          name: "rate",
-          path: "cfg.rate",
-          address: "0x20000100",
-          size: 4,
-          type: "uint32_t",
-          kind: "scalar",
-          display: "tr::cfg::rate",
-        },
-        {
-          name: "mode",
-          path: "cfg.mode",
-          address: "0x20000104",
-          size: 1,
-          type: "uint8_t",
-          kind: "scalar",
-          display: "tr::cfg::mode",
-        },
-      ],
-    },
-  ];
-  const withCatalog = (b: Booted): Booted => {
-    b.send({ kind: "live-catalog", roots: CATALOG });
-    return b;
-  };
-  const search = (b: Booted, q: string): void => {
-    const inp = b.$('[data-testid="live-search"]') as StubEl;
-    inp.value = q;
-    inp.dispatchEvent({ type: "input", target: inp });
-  };
-
-  it("renders a scalar root as a leafRow and a struct root as an expandable groupRow", () => {
-    const b = withCatalog(boot());
-    const scalar = b.$('tr[data-name="i2c1.handle"]');
-    expect(scalar?.dataset.kind).toBe("leaf");
-    expect(scalar?.children[0].textContent).toBe("tr::hardwares::stm32::i2c1::bridge::handle");
-    const group = b.$('tr[data-name="cfg"]');
-    expect(group?.dataset.kind).toBe("group");
-    expect(group?.children[0].textContent).toBe("tr::cfg");
-    expect(b.$('tr[data-name="cfg.rate"]')).not.toBeNull();
-    expect(b.$('tr[data-name="cfg.mode"]')).not.toBeNull();
-    // No row may be keyed by the display string.
-    expect(b.$('tr[data-name="tr::cfg"]')).toBeNull();
-    expect(b.$('tr[data-name="tr::cfg::rate"]')).toBeNull();
-  });
-
-  it("a catalog leaf shows values via paintLeaf like a tree leaf", () => {
-    const b = withCatalog(boot());
-    b.send({ kind: "live-sample", samples: [sample("cfg.rate", "0x00000064")] });
-    expect(b.$('tr[data-name="cfg.rate"]')?.children[1].textContent).toBe("100");
-  });
-
-  it("the + button and the 書込 input post the machine path, never the display name", () => {
-    const b = withCatalog(boot());
-    const add = b.$('tr[data-name="cfg.rate"] [data-op="add"]');
-    add?.dispatchEvent({ type: "click", target: add });
-    expect(b.posted.at(-1)).toEqual({ kind: "live-add", names: ["cfg.rate"] });
-    const inp = b.$('tr[data-name="cfg.rate"] [data-write]') as StubEl;
-    inp.value = "7";
-    inp.dispatchEvent({ type: "keydown", key: "Enter", target: inp });
-    expect(b.posted.at(-1)).toEqual({ kind: "live-write", name: "cfg.rate", value: "7" });
-    for (const m of b.posted) {
-      expect(JSON.stringify(m)).not.toContain("tr::cfg::rate");
-    }
-  });
-
-  it("filters case-insensitively against display, path and type; empty query shows everything", () => {
-    const b = withCatalog(boot());
-    search(b, "TR::CFG::RATE");
-    expect(b.$('tr[data-name="cfg.rate"]')?.dataset.hidden).not.toBe("1");
-    expect(b.$('tr[data-name="cfg.mode"]')?.dataset.hidden).toBe("1");
-    search(b, "uint8_t");
-    expect(b.$('tr[data-name="cfg.mode"]')?.dataset.hidden).not.toBe("1");
-    expect(b.$('tr[data-name="cfg.rate"]')?.dataset.hidden).toBe("1");
-    search(b, "cfg.mode");
-    expect(b.$('tr[data-name="cfg.mode"]')?.dataset.hidden).not.toBe("1");
-    search(b, "");
-    expect(b.$('tr[data-name="cfg.rate"]')?.dataset.hidden).not.toBe("1");
-    expect(b.$('tr[data-name="cfg.mode"]')?.dataset.hidden).not.toBe("1");
-    expect(b.$('tr[data-name="cfg"]')?.dataset.hidden).not.toBe("1");
-    expect(b.$('tr[data-name="i2c1.handle"]')?.dataset.hidden).not.toBe("1");
-  });
-
-  it("a group with some matching descendant stays visible showing only the matches; a fully-missing group hides", () => {
-    const b = withCatalog(boot());
-    search(b, "rate");
-    // The group itself does not match "rate", but one descendant does.
-    expect(b.$('tr[data-name="cfg"]')?.dataset.hidden).not.toBe("1");
-    expect(b.$('tr[data-name="cfg.rate"]')?.dataset.hidden).not.toBe("1");
-    expect(b.$('tr[data-name="cfg.mode"]')?.dataset.hidden).toBe("1");
-    search(b, "zzz-no-such-variable");
-    expect(b.$('tr[data-name="cfg"]')?.dataset.hidden).toBe("1");
-    expect(b.$('tr[data-name="cfg.rate"]')?.dataset.hidden).toBe("1");
-    expect(b.$('tr[data-name="i2c1.handle"]')?.dataset.hidden).toBe("1");
-  });
-
-  it("filtering preserves the watched highlight and the current value text", () => {
-    const b = withCatalog(boot());
-    b.send({ kind: "live-sample", samples: [sample("cfg.rate", "0x00000064")] });
-    b.send({ kind: "live-watchlist", names: ["cfg.rate"] });
-    search(b, "rate");
-    expect(b.$('tr[data-name="cfg.rate"]')?.dataset.watched).toBe("1");
-    expect(b.$('tr[data-name="cfg.rate"]')?.children[1].textContent).toBe("100");
-    search(b, "");
-    expect(b.$('tr[data-name="cfg.rate"]')?.dataset.watched).toBe("1");
-    expect(b.$('tr[data-name="cfg.rate"]')?.children[1].textContent).toBe("100");
-  });
-
-  it("live-types still renders the debug tree after the catalog change", () => {
-    const b = withCatalog(boot());
-    withTree(b);
-    expect(b.$('tr[data-name="sys.loop_hz"]')).not.toBeNull();
-    expect(b.$('tr[data-name="drive"]')?.dataset.kind).toBe("group");
-  });
-});
 
 describe("parseSidebarMessage: new tree messages", () => {
   it("accepts live-add and live-remove-names with their name lists", () => {

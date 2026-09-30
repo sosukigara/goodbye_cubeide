@@ -62,7 +62,7 @@ const VAR_SCRIPT = `var __SEED = __VAR_SEED__;`
   + `const vscode = acquireVsCodeApi();`
   + `const q = (s) => document.querySelector(s);`
   + `const mk = (t) => document.createElement(t);`
-  + `const V = { types: new Map(), order: [], watched: {}, last: new Map(), query: '' };`
+  + `const V = { types: new Map(), order: [], watched: Object.create(null), last: new Map(), query: '' };`
   + `const tbody = q('[data-testid="var-rows"]');`
   + `const errBox = q('[data-testid="var-error"]');`
   + `const noteBox = q('[data-testid="var-note"]');`
@@ -135,10 +135,14 @@ const VAR_SCRIPT = `var __SEED = __VAR_SEED__;`
   + `function clearErr() { if (errBox) { errBox.textContent = ''; errBox.className = 'err'; } }`
   // Membership is the host's call: live-watchlist is authoritative, so the
   // table converges to exactly what the host polls — including empty.
+  // watched/keep are null-prototype maps, not {}: a C symbol called
+  // `constructor` or `toString` would otherwise hit Object.prototype, look
+  // already registered, and never get a row (same class the graph panel
+  // fixed with a Set).
   + `function onWatchlist(m) {`
   + ` const arr = m.names;`
   + ` if (!Array.isArray(arr)) return;`
-  + ` const keep = {};`
+  + ` const keep = Object.create(null);`
   + ` for (let i = 0; i < arr.length; i += 1) {`
   + `  const n = String(arr[i]);`
   + `  if (n === '') continue;`
@@ -262,8 +266,10 @@ const VAR_SCRIPT = `var __SEED = __VAR_SEED__;`
   + ` else if (k === 'live-types') onTypes(m);`
   + ` else if (k === 'live-watchlist') onWatchlist(m);`
   + `});`
-  + `q('[data-testid="var-add"]').addEventListener('click', () => addName(picker ? picker.value : ''));`
-  + `q('[data-testid="var-remove"]').addEventListener('click', () => removeName(picker ? picker.value : ''));`
+  + `const addBtn = q('[data-testid="var-add"]');`
+  + `if (addBtn) addBtn.addEventListener('click', () => addName(picker ? picker.value : ''));`
+  + `const removeBtn = q('[data-testid="var-remove"]');`
+  + `if (removeBtn) removeBtn.addEventListener('click', () => removeName(picker ? picker.value : ''));`
   + `if (picker) picker.addEventListener('keydown', (e) => { if (e && e.key === 'Enter') addName(picker.value); });`
   + `if (search) search.addEventListener('input', () => { V.query = search.value || ''; paintAll(); });`
   + `if (Array.isArray(__SEED)) for (let i = 0; i < __SEED.length; i += 1) { const n = String(__SEED[i]); if (n !== '' && !V.watched[n]) { V.watched[n] = true; V.order.push(n); } }`

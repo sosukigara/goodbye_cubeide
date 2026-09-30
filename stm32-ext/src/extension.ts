@@ -2866,12 +2866,11 @@ export function activate(context: vscode.ExtensionContext): void {
       { enableScripts: true, enableCommandUris: true, retainContextWhenHidden: true },
     );
     variableWebviewPanel = panel;
-    // Sequence matters: mount (html) -> types (addTypeTarget seeds live-types,
-    // live-watchlist and the latest sample snapshot). No archive replay: the
-    // table shows latest values, not history, and addTypeTarget already seeds
-    // the latest snapshot, so there is nothing to replay.
+    // A rowless table has nothing to paint, and the watchlist is the table's
+    // membership: replayTo is what seeds both, which addTypeTarget does not.
     mountVariablePanel(panel.webview);
     livePanel.addTypeTarget(panel.webview);
+    livePanel.replayTo(panel.webview);
     panel.webview.onDidReceiveMessage((raw: unknown) => {
       const msg = parseVariablePanelMessage(raw);
       if (msg === null) {

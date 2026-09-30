@@ -134,17 +134,7 @@ function liveSection(s: SidebarState): string {
     // (text + optional detail). The pill is for the state word only, so a
     // reason can never be overwritten by it.
     + `<p class="msg" data-testid="live-status-text" role="status" aria-live="polite"></p>`
-    + `<p class="detail" data-testid="live-detail"></p>`
-    + `<p class="note" data-testid="live-add-note" role="status"></p>`
-    + `<div data-testid="live-write-result" role="status"></div>`
-    + `<p class="warn" data-testid="live-unresolved">${s.unresolved.length > 0 ? `未解決 ${esc(s.unresolved.join(", "))}` : ""}</p>`
-    + `<input data-testid="live-search" type="text" placeholder="変数を検索" value="">`
-    + `<table class="live" data-testid="live-tree">`
-  + `<thead><tr><th class="n" scope="col">変数</th><th class="v" scope="col">値</th>`
-  + `<th class="w" scope="col">書込</th>`
-  + `<th class="o" scope="col">操作</th></tr></thead>`
-    + `<tbody data-testid="live-rows"></tbody></table>`
-  + `<p class="empty" data-testid="live-empty">監視する変数がありません — 「変数追加」から選択</p>`;
+    + `<p class="detail" data-testid="live-detail"></p>`;
 }
 
 function graphSection(s: SidebarState): string {
@@ -246,73 +236,7 @@ export const SIDEBAR_CSS = `<style>`
   + `.busy{opacity:.7}.result{white-space:pre-wrap}`
   + `label.chk{display:inline-flex;align-items:center;gap:3px;font-size:.9em;opacity:.8;margin:0 6px 4px 0}`
   + `label.chk input{width:auto;margin:0}`
-  // table-layout:fixed + an auto-width name column is what pins the name to
-  // the left edge and the value to the right edge in a narrow sidebar.
-  + `table.live{width:100%;border-collapse:collapse;margin-top:6px;table-layout:fixed}`
-  + `table.live th{font-size:.88em;font-weight:600;text-align:left;opacity:.75;padding:3px 4px;border-bottom:1px solid var(--vscode-panel-border,rgba(128,128,128,.3))}`
-  // table-layout:fixed takes the column widths from the FIRST row, which is the
-  // <thead> row. Declaring them on `td` alone does nothing, which is why the
-  // name column stayed at 100px in a 300px sidebar and clipped
-  // "loop_period_us". They are declared on both so neither reads as a bug.
-  + `table.live th:nth-child(1){width:auto}`
-  // Column widths are ABSOLUTE, derived from the host-injected font px.
-  // They cannot be em or ch: a custom property is a token substitution, so
-  // `6.8em` still resolves against the font-size of whatever element uses it,
-  // and th is .88em while td.v is 1em. table-layout:fixed takes the <thead>
-  // value — the smaller one — so the hex value ellipsised while the
-  // declaration read as if it were correct.
-  //  --valw: `0x` + 8 hex digits = 10 monospace chars at ~0.6x the font, plus
-  //          the cell's own 8px padding.
-  //  --opw : three 1.6em square buttons plus two .2em flex gaps = 5.2x the
-  //          font, plus the cell's own 8px padding. (5.4em was right when the
-  //          spacing came from a trailing margin; with `gap` it is 5.2, and
-  //          the cell no longer has hidden inline text to overflow.)
-  // The name column is `auto` and absorbs the rest, ellipsising if it must.
-  + `table.live{--valw:calc(var(--stm32ext-ui-font,15px) * 6 + 8px);--wrw:calc(var(--stm32ext-ui-font,15px) * 5.5 + 8px);--opw:calc(var(--stm32ext-ui-font,15px) * 5.2 + 8px)}`
-  + `table.live th:nth-child(2){width:var(--valw)}`
-  + `table.live th:nth-child(3){width:var(--wrw)}`
-  + `table.live th:nth-child(4){width:var(--opw)}`
-  + `table.live th,table.live td{box-sizing:border-box}`
-  + `table.live td{padding:2px 4px;border-bottom:1px solid var(--vscode-panel-border,rgba(128,128,128,.2));overflow:hidden}`
-  // A group row is a catalogue node, not a watched value: collapsing or emptying
-  // a subtree must keep the node so the user can re-add without a round-trip.
-  + `tr[data-kind="group"] td.n{cursor:pointer;font-weight:600}`
-  + `tr[data-kind="group"] td.n::before{content:"▾";display:inline-block;width:1em;opacity:.7}`
-  + `tr[data-collapsed="1"] td.n::before{content:"▸"}`
-  + `tr[data-hidden="1"]{display:none}`
-  + `tr[data-kind="leaf"][data-watched="0"]{opacity:.45}`
-  + `tr[data-kind="leaf"][data-pollable="0"]{opacity:.55}`
-  + `tr[data-kind="leaf"][data-pollable="0"] td.n{text-decoration:underline dotted rgba(128,128,128,.5);text-underline-offset:3px}`
-  + `td.n{width:auto;font-family:var(--vscode-editor-font-family,monospace);font-size:1em;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}`
-  // text-overflow matters on the VALUE cell, not just the name: in hex view
-  // `0xbf800000` fills the column, and a value clipped without an ellipsis
-  // reads as a different (wrong) number.
-  + `td.v{width:var(--valw);font-family:var(--vscode-editor-font-family,monospace);font-size:1em;font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}`
-  // The op glyphs ARE the add/remove controls: 1.6em square, centred, rather
-  // than a sliver squeezed against a fixed cell edge. border-box is
-  // load-bearing: without it the width is the CONTENT box, so three of them
-  // plus margins overflow the column and the rightmost one — 除外 — gets
-  // clipped and stops being clickable.
-  // gap, not literal spaces or a trailing margin: the cell is a flex row, so
-  // the spacing between the three buttons is part of the width calculation
-  // instead of invisible inline text that --opw cannot account for.
-  + `table.live td.o button{box-sizing:border-box;padding:0;margin:0;width:1.6em;height:1.6em;min-height:1.6em;line-height:1;font-size:1em;display:inline-flex;align-items:center;justify-content:center}`
-  + `table.live td.o{display:flex;justify-content:flex-end;align-items:center;gap:.2em}`
-  + `td.v[data-fmt]{cursor:pointer}`
-  + `td.v[data-fmt]:hover{background:rgba(128,128,128,.18)}`
-  // overflow:visible so a future font-size or padding bump can never silently
-  // make the rightmost control unclickable again — the failure mode that made
-  // 削除 look broken while every test stayed green.
-  + `td.o{width:var(--opw);text-align:right;white-space:nowrap;overflow:visible}`
   + `input{background:var(--vscode-input-background,#3c3c3c);color:var(--vscode-input-foreground,#ccc);border:1px solid var(--vscode-input-border,rgba(128,128,128,.35));border-radius:2px;padding:5px 7px;font:inherit;box-sizing:border-box;width:100%;margin:2px 0}`
-  // After the generic input rule on purpose: the 書込 cell is 5.5em wide, so it
-  // inherits none of that padding or the 2px vertical margin — a 1.6em glyph row
-  // would grow to two lines and every row's height would jump.
-  + `td.w{width:var(--wrw);text-align:left;white-space:nowrap;overflow:visible}`
-  + `td.w input{padding:1px 3px;margin:0;font-size:.95em;min-width:0}`
-  + `td.w .wr{margin-left:1px;font-size:.9em}`
-  + `td.w .wr[data-ok="1"]{color:var(--vscode-testing-iconPassed,#73c991)}`
-  + `td.w .wr[data-ok="0"]{color:var(--vscode-errorForeground,#f14c4c)}`
   + `a.btn{display:inline-block;margin:0 4px 4px 0;padding:3px 10px;border-radius:2px;background:var(--vscode-button-secondaryBackground,#3a3d41);color:var(--vscode-button-secondaryForeground,#ccc);text-decoration:none}`
   + `ul.series{list-style:none;margin:4px 0 0;padding:0}`
   + `ul.series li{display:flex;gap:6px;align-items:baseline;font-family:var(--vscode-editor-font-family,monospace);font-size:.95em;padding:2px 0}`
@@ -322,7 +246,7 @@ export const SIDEBAR_CSS = `<style>`
   + `.vv{font-variant-numeric:tabular-nums}`
   + `.st{opacity:.7;font-size:.9em}`
   + `pre{background:var(--vscode-textCodeBlock-background,rgba(128,128,128,.1));padding:5px;overflow:auto;box-sizing:border-box;max-height:150px;font-family:var(--vscode-editor-font-family,monospace);font-size:.88em;margin:0}`
-  + `button:focus-visible,input:focus-visible,td:focus-visible,a.btn:focus-visible{outline:1px solid var(--vscode-focusBorder,#007fd4)}`
+  + `button:focus-visible,input:focus-visible,a.btn:focus-visible{outline:1px solid var(--vscode-focusBorder,#007fd4)}`
   + `</style>`;
 
 // The webview program. Kept as an array of lines (not one concatenated blob)
@@ -771,6 +695,7 @@ export const SIDEBAR_SCRIPT: string = [
   "  post('live-write', { name: tr.dataset.name, value: value });",
   "};",
   "const paintLeaf = (s) => {",
+  "  if (!rows) { lastRaw.set(s.name, s.value); return; }",
   "  let tr = cache.get(s.name);",
   "  let fresh = false;",
   "  if (!tr) { tr = leafRow(s.name); cache.set(s.name, tr); rows.appendChild(tr); fresh = true; }",
@@ -1110,12 +1035,13 @@ export const SIDEBAR_SCRIPT: string = [
   "    const arr = m.samples;",
   "    for (let i = 0; i < arr.length; i += 1) {",
   "      const s = arr[i];",
-  "      if (!cache.has(s.name) && st.hasTree) continue;",
-  "      paintLeaf(s);",
   "      if (series.has(s.name)) {",
   "        const t = show(s);",
   "        if (lastValue.get(s.name) !== t) { lastValue.set(s.name, t); paintSeriesValue(s.name); }",
   "      }",
+  "      if (!rows) continue;",
+  "      if (!cache.has(s.name) && st.hasTree) continue;",
+  "      paintLeaf(s);",
   "    }",
   "    return;",
   "  }",

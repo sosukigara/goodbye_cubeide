@@ -45,13 +45,31 @@ describe("sidebar html", () => {
     expect(html).toContain('data-testid="build-flash"');
     expect(html).toContain('data-testid="flash-start"');
     expect(html).toContain('data-testid="live-start"');
-    expect(html).toContain('data-testid="live-rows"');
+    expect(html).toContain('data-testid="live-stop"');
+    expect(html).toContain('data-testid="live-pause-toggle"');
+    expect(html).toContain('data-testid="live-reconnect"');
+    expect(html).toContain('data-testid="live-add-watch"');
+    expect(html).toContain('data-testid="live-export-csv"');
   });
 
-  it("value editing is reachable from the table itself", () => {
-    const script = scriptsOf(html).join("\n");
-    expect(script).toContain("live-write");
-    expect(script).toContain("値を入力してEnterで書き込み");
+  it("live section is status + controls + a single tab link, nothing else", () => {
+    expect(html).toContain('data-testid="live-state"');
+    expect(html).toContain('data-testid="live-source"');
+    expect(html).toContain('data-testid="live-hz"');
+    expect(html).toContain('data-testid="live-drop-rate"');
+    expect(html).toContain('data-testid="variable-open"');
+    expect(html).toContain("command:stm32ext.showVariables");
+    expect(html).toContain("変数をタブで開く");
+    expect(html).toContain('data-testid="live-why"');
+    expect(html).toContain('data-testid="live-status-text"');
+    expect(html).toContain('data-testid="live-detail"');
+    expect(html).not.toContain('data-testid="live-write-result"');
+    expect(html).not.toContain('data-testid="live-unresolved"');
+    expect(html).not.toContain('data-testid="live-search"');
+    expect(html).not.toContain('data-testid="live-tree"');
+    expect(html).not.toContain('data-testid="live-rows"');
+    expect(html).not.toContain('data-testid="live-empty"');
+    expect(html).not.toContain('data-testid="live-add-note"');
   });
 
   it("has no guide paragraph or AI-flavored prose", () => {
