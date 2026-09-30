@@ -210,22 +210,27 @@ export const SIDEBAR_CSS = `<style>`
   // a 15px-sized column and the rightmost control was clipped by 5px — the
   // same failure this sizing work was meant to end, reappearing at the
   // default. One source, so the columns can never disagree with the text.
-  + `body{font-family:var(--vscode-font-family,sans-serif);font-size:var(--stm32ext-ui-font,15px);color:var(--vscode-foreground,#ccc);margin:0;padding:0 8px 24px;line-height:1.5}`
-  + `.launch{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:10px 0 4px}`
-  + `.launch a.btn{margin:0;text-align:center;padding:6px 4px;border-radius:4px;border:1px solid var(--vscode-panel-border,rgba(128,128,128,.3));font-weight:600;letter-spacing:.04em}`
-  + `section{border-top:1px solid var(--vscode-panel-border,rgba(128,128,128,.3));padding:8px 0 10px}`
-  + `section:first-child{border-top:none}`
-  + `h2{font-size:.92em;font-weight:600;margin:0 0 6px;letter-spacing:.02em;display:flex;align-items:center;gap:6px}`
-  + `.step{display:inline-flex;align-items:center;justify-content:center;min-width:1.5em;height:1.5em;padding:0 .3em;border-radius:50%;background:var(--vscode-badge-background,#4d4d4d);color:var(--vscode-badge-foreground,#fff);font-size:.85em;font-weight:700;line-height:1}`
+  + `body{font-family:var(--vscode-font-family,sans-serif);font-size:var(--stm32ext-ui-font,15px);color:var(--vscode-foreground,#ccc);margin:0;padding:10px 10px 28px;line-height:1.5}`
+  + `.launch{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:2px 0 12px}`
+  + `.launch a.btn{margin:0;text-align:center;padding:9px 4px;border-radius:8px;border:1px solid rgba(127,127,127,.28);background:rgba(127,127,127,.1);font-weight:700;letter-spacing:.06em;transition:background .12s ease,border-color .12s ease}`
+  + `.launch a.btn:hover{background:rgba(127,127,127,.18);border-color:var(--vscode-textLink-foreground,#3794ff)}`
+  + `.launch a.btn.primary{background:var(--vscode-button-background,#0e639c);border-color:transparent}`
+  + `.launch a.btn.primary:hover{filter:brightness(1.12)}`
+  + `section{background:rgba(127,127,127,.07);border:1px solid rgba(127,127,127,.22);border-radius:10px;padding:10px 12px 12px;margin:0 0 10px}`
+  + `h2{font-size:.82em;font-weight:700;margin:0 0 8px;letter-spacing:.1em;opacity:.92;display:flex;align-items:center;gap:8px}`
+  + `h2::after{content:"";flex:1 1 auto;height:1px;background:rgba(127,127,127,.25)}`
+  + `.step{display:inline-flex;align-items:center;justify-content:center;min-width:1.4em;height:1.4em;padding:0 .35em;border-radius:999px;background:var(--vscode-textLink-foreground,#3794ff);color:#fff;font-size:.85em;font-weight:700;line-height:1}`
   + `a.btn.primary{background:var(--vscode-button-background,#0e639c);color:var(--vscode-button-foreground,#fff)}`
   + `.ctrls{display:flex;flex-wrap:wrap;gap:0}`
   // Tap targets: 28px for section buttons, 24px in the dense table. The op
   // glyphs are the only way to add or remove a variable.
-  + `button{font:inherit;margin:0 4px 4px 0;padding:5px 12px;min-height:28px;border-radius:2px;border:1px solid transparent;background:var(--vscode-button-secondaryBackground,#3a3d41);color:var(--vscode-button-secondaryForeground,#ccc);cursor:pointer}`
+  + `button{font:inherit;margin:0 4px 4px 0;padding:5px 12px;min-height:28px;border-radius:6px;border:1px solid transparent;background:var(--vscode-button-secondaryBackground,#3a3d41);color:var(--vscode-button-secondaryForeground,#ccc);cursor:pointer;transition:filter .12s ease}`
+  + `button:hover:not(:disabled){filter:brightness(1.15)}`
   + `button:disabled{opacity:.45;cursor:default}`
   + `button.primary{background:var(--vscode-button-background,#0e639c);color:var(--vscode-button-foreground,#fff)}`
-  + `button.row{display:block;width:100%;text-align:left;background:transparent;border:none;padding:2px 0}`
-  + `button.row.on{font-weight:600}`
+  + `button.row{display:block;width:100%;text-align:left;background:transparent;border:none;padding:3px 6px;border-radius:6px}`
+  + `button.row:hover{background:rgba(127,127,127,.14)}`
+  + `button.row.on{font-weight:700;background:rgba(127,127,127,.14);box-shadow:inset 2px 0 0 var(--vscode-textLink-foreground,#3794ff)}`
   + `.rows{margin-bottom:4px}`
   + `p{margin:3px 0}`
   + `.empty,.warn{opacity:.7}`
@@ -234,27 +239,39 @@ export const SIDEBAR_CSS = `<style>`
   + `.msg{margin:3px 0;font-size:.95em}`
   + `p.msg:empty, p.detail:empty{display:none}`
   + `.detail{margin:2px 0 3px;opacity:.75;font-size:.92em;white-space:pre-wrap}`
-  + `.status{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap;margin:4px 0}`
-  + `.pill{font-weight:600}.pill.ok{color:var(--vscode-testing-iconPassed,#388a34)}.pill.bad{color:var(--vscode-testing-iconFailed,#f14c4c)}.pill.run{color:var(--vscode-testing-iconQueued,#cca700)}.pill.idle{opacity:.6;font-weight:400}`
+  + `.status{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:6px 0}`
+  + `.pill{font-weight:700;font-size:.86em;padding:2px 10px;border-radius:999px;background:rgba(127,127,127,.16)}`
+  + `.pill.ok{color:var(--vscode-testing-iconPassed,#4fc34f);background:rgba(56,138,52,.18)}`
+  + `.pill.bad{color:var(--vscode-testing-iconFailed,#f14c4c);background:rgba(241,76,76,.16)}`
+  + `.pill.run{color:var(--vscode-testing-iconQueued,#e2c000);background:rgba(204,167,0,.16)}`
+  + `.pill.idle{opacity:.65;font-weight:400}`
   + `.pct,.drop,.path{font-family:var(--vscode-editor-font-family,monospace);font-variant-numeric:tabular-nums;opacity:.8;font-size:.94em}`
   + `.path{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}`
-  + `progress{width:100%;height:3px}`
+  + `progress{width:100%;height:5px;border-radius:999px;overflow:hidden}`
+  + `progress::-webkit-progress-bar{background:rgba(127,127,127,.18);border-radius:999px}`
+  + `progress::-webkit-progress-value{background:var(--vscode-textLink-foreground,#3794ff);border-radius:999px}`
+  + `progress::-moz-progress-bar{background:var(--vscode-textLink-foreground,#3794ff);border-radius:999px}`
   + `.diags{margin-top:4px;max-height:120px;overflow:auto}`
   + `.diag{display:block;font-family:var(--vscode-editor-font-family,monospace);font-size:.9em;color:var(--vscode-textLink-foreground,#3794ff);text-decoration:none}`
   + `.busy{opacity:.7}.result{white-space:pre-wrap}`
   + `label.chk{display:inline-flex;align-items:center;gap:3px;font-size:.9em;opacity:.8;margin:0 6px 4px 0}`
   + `label.chk input{width:auto;margin:0}`
-  + `input{background:var(--vscode-input-background,#3c3c3c);color:var(--vscode-input-foreground,#ccc);border:1px solid var(--vscode-input-border,rgba(128,128,128,.35));border-radius:2px;padding:5px 7px;font:inherit;box-sizing:border-box;width:100%;margin:2px 0}`
-  + `a.btn{display:inline-block;margin:0 4px 4px 0;padding:3px 10px;border-radius:2px;background:var(--vscode-button-secondaryBackground,#3a3d41);color:var(--vscode-button-secondaryForeground,#ccc);text-decoration:none}`
-  + `ul.series{list-style:none;margin:4px 0 0;padding:0}`
-  + `ul.series li{display:flex;gap:6px;align-items:baseline;font-family:var(--vscode-editor-font-family,monospace);font-size:.95em;padding:2px 0}`
+  + `input{background:var(--vscode-input-background,#3c3c3c);color:var(--vscode-input-foreground,#ccc);border:1px solid var(--vscode-input-border,rgba(128,128,128,.35));border-radius:6px;padding:5px 7px;font:inherit;box-sizing:border-box;width:100%;margin:2px 0}`
+  + `input:focus{border-color:var(--vscode-focusBorder,#007fd4);outline:none}`
+  + `a.btn{display:inline-block;margin:0 4px 4px 0;padding:4px 12px;border-radius:6px;background:var(--vscode-button-secondaryBackground,#3a3d41);color:var(--vscode-button-secondaryForeground,#ccc);text-decoration:none;transition:filter .12s ease}`
+  + `a.btn:hover{filter:brightness(1.15)}`
+  + `ul.series{list-style:none;margin:6px 0 0;padding:0;display:flex;flex-direction:column;gap:4px}`
+  + `ul.series li{display:flex;gap:8px;align-items:center;font-family:var(--vscode-editor-font-family,monospace);font-size:.95em;padding:4px 8px;background:rgba(127,127,127,.08);border:1px solid rgba(127,127,127,.18);border-radius:6px}`
   + `ul.series li[data-visible="0"]{opacity:.5}`
-  + `.dot{width:8px;height:8px;border-radius:50%;flex:0 0 auto;background:var(--vscode-textLink-foreground,#3794ff)}`
+  + `.dot{width:9px;height:9px;border-radius:3px;flex:0 0 auto;background:var(--vscode-textLink-foreground,#3794ff)}`
   + `.nm{flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}`
-  + `.vv{font-variant-numeric:tabular-nums}`
-  + `.st{opacity:.7;font-size:.9em}`
-  + `pre{background:var(--vscode-textCodeBlock-background,rgba(128,128,128,.1));padding:5px;overflow:auto;box-sizing:border-box;max-height:150px;font-family:var(--vscode-editor-font-family,monospace);font-size:.88em;margin:0}`
+  + `.vv{font-variant-numeric:tabular-nums;font-weight:600}`
+  + `.st{opacity:.7;font-size:.86em;padding:1px 8px;border-radius:999px;background:rgba(127,127,127,.16)}`
+  + `pre{background:rgba(127,127,127,.08);border:1px solid rgba(127,127,127,.18);border-radius:8px;padding:8px;overflow:auto;box-sizing:border-box;max-height:150px;font-family:var(--vscode-editor-font-family,monospace);font-size:.88em;margin:0}`
   + `button:focus-visible,input:focus-visible,a.btn:focus-visible{outline:1px solid var(--vscode-focusBorder,#007fd4)}`
+  + `::-webkit-scrollbar{width:10px;height:10px}`
+  + `::-webkit-scrollbar-thumb{background:rgba(127,127,127,.35);border-radius:999px;border:2px solid transparent;background-clip:content-box}`
+  + `::-webkit-scrollbar-track{background:transparent}`
   + `</style>`;
 
 // The webview program. Kept as an array of lines (not one concatenated blob)

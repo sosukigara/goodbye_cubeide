@@ -35,37 +35,43 @@ export const GRAPH_SERIES_COLORS: readonly string[] = [
 
 const GRAPH_CSS = `<style>`
   + `html,body{height:100%}`
-  + `body{font-family:var(--vscode-font-family,sans-serif);font-size:var(--vscode-font-size,13px);color:var(--vscode-foreground,#ccc);margin:0;padding:8px 10px 8px;line-height:1.4;display:flex;flex-direction:column;box-sizing:border-box;overflow:hidden}`
-  + `h1{font-size:1em;font-weight:600;margin:0 0 8px;padding:0}`
-  + `h1 .ver{font-weight:400;font-size:.85em;opacity:.55}`
-  + `.bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:4px}`
+  + `body{font-family:var(--vscode-font-family,sans-serif);font-size:var(--vscode-font-size,13px);color:var(--vscode-foreground,#ccc);margin:0;padding:16px 20px 10px;line-height:1.4;display:flex;flex-direction:column;box-sizing:border-box;overflow:hidden}`
+  + `h1{font-size:1.1em;font-weight:700;margin:0 0 2px;padding:0 0 0 10px;border-left:3px solid var(--vscode-textLink-foreground,#3794ff);letter-spacing:.03em}`
+  + `h1 .ver{font-weight:400;font-size:.8em;opacity:.5}`
+  + `.bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:12px 0 10px;padding:10px 12px;background:rgba(127,127,127,.07);border:1px solid rgba(127,127,127,.2);border-radius:10px}`
   + `.grp{display:flex;gap:6px;align-items:center;flex-wrap:wrap}`
-  + `.lbl{font-size:.85em;opacity:.7;white-space:nowrap}`
-  + `input,select,button{font:inherit;background:var(--vscode-input-background,#3c3c3c);color:var(--vscode-input-foreground,#ccc);border:1px solid var(--vscode-input-border,rgba(128,128,128,.35));border-radius:2px;padding:3px 7px}`
-  + `button{cursor:pointer;background:var(--vscode-button-secondaryBackground,#3a3d41);color:var(--vscode-button-secondaryForeground,#ccc);border-color:transparent}`
+  + `.lbl{font-size:.82em;font-weight:700;letter-spacing:.08em;opacity:.65;white-space:nowrap}`
+  + `input,select,button{font:inherit;background:var(--vscode-input-background,#3c3c3c);color:var(--vscode-input-foreground,#ccc);border:1px solid var(--vscode-input-border,rgba(128,128,128,.35));border-radius:6px;padding:4px 8px}`
+  + `button{cursor:pointer;background:var(--vscode-button-secondaryBackground,#3a3d41);color:var(--vscode-button-secondaryForeground,#ccc);border-color:transparent;transition:filter .12s ease}`
+  + `button:hover{filter:brightness(1.15)}`
   + `button.primary{background:var(--vscode-button-background,#0e639c);color:var(--vscode-button-foreground,#fff)}`
   + `button:focus-visible,input:focus-visible,select:focus-visible{outline:1px solid var(--vscode-focusBorder,#007fd4)}`
-  + `.wrap{flex:1 1 auto;min-height:180px;position:relative;margin:2px 0 4px}`
-  + `canvas{position:absolute;left:0;top:0;width:100%;height:100%;display:block;border:1px solid var(--vscode-panel-border,rgba(128,128,128,.3));background:var(--vscode-editor-background,#1e1e1e)}`
+  + `.wrap{flex:1 1 auto;min-height:180px;position:relative;margin:2px 0 8px}`
+  + `canvas{position:absolute;left:0;top:0;width:100%;height:100%;display:block;border:1px solid rgba(127,127,127,.22);border-radius:10px;background:var(--vscode-editor-background,#1e1e1e)}`
   + `ul.series{list-style:none;margin:2px 0 0;padding:0;display:flex;flex-wrap:wrap;gap:6px}`
-  + `ul.series li{display:flex;align-items:center;gap:5px;border:1px solid var(--vscode-panel-border,rgba(128,128,128,.3));border-radius:2px;padding:1px 3px;cursor:pointer;max-width:100%}`
+  + `ul.series li{display:flex;align-items:center;gap:7px;border:1px solid rgba(127,127,127,.25);background:rgba(127,127,127,.08);border-radius:999px;padding:3px 6px 3px 10px;cursor:pointer;max-width:100%;transition:background .12s ease}`
+  + `ul.series li:hover{background:rgba(127,127,127,.16)}`
   + `ul.series li[data-visible="false"]{opacity:.4}`
   + `ul.series li[data-kind="enum"]{border-style:dashed}`
-  + `ul.series li button{padding:0 5px;line-height:1.1}`
-  + `.sw{width:10px;height:10px;border-radius:2px;display:inline-block;flex:0 0 auto}`
+  + `ul.series li button{padding:0 7px;line-height:1.3;border-radius:999px}`
+  + `.sw{width:10px;height:10px;border-radius:3px;display:inline-block;flex:0 0 auto}`
   + `span.nm{font-family:var(--vscode-editor-font-family,monospace);font-size:.9em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}`
-  + `table.read{width:100%;border-collapse:collapse;margin-top:6px;font-size:.9em}`
-  + `table.read th{font-weight:400;opacity:.65;text-align:right;padding:1px 8px 1px 0}`
+  + `table.read{width:100%;border-collapse:separate;border-spacing:0;margin-top:8px;font-size:.9em;background:rgba(127,127,127,.05);border:1px solid rgba(127,127,127,.2);border-radius:10px;overflow:hidden}`
+  + `table.read th{font-weight:700;font-size:.8em;letter-spacing:.08em;opacity:.65;text-align:right;padding:7px 10px;background:rgba(127,127,127,.08)}`
   + `table.read th:first-child{text-align:left}`
-  + `table.read td{padding:1px 8px 1px 0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:44%}`
+  + `table.read td{padding:5px 10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:44%}`
+  + `table.read tbody tr:hover td{background:rgba(127,127,127,.09)}`
   + `td.n{width:auto}`
-  + `td.v{font-family:var(--vscode-editor-font-family,monospace);font-variant-numeric:tabular-nums;text-align:right;width:104px}`
+  + `td.v{font-family:var(--vscode-editor-font-family,monospace);font-variant-numeric:tabular-nums;text-align:right;width:104px;font-weight:600}`
   + `td.u{width:64px;opacity:.8;text-align:right}`
   + `.msg{min-height:1.2em;margin:2px 0;font-size:.9em}`
   + `.err{color:var(--vscode-testing-iconFailed,#f14c4c)}`
   + `.note{opacity:.75}`
-  + `footer{display:flex;gap:14px;flex-wrap:wrap;align-items:baseline;font-size:.85em;opacity:.8;margin-top:2px}`
+  + `footer{display:flex;gap:14px;flex-wrap:wrap;align-items:baseline;font-size:.85em;opacity:.8;margin-top:4px}`
   + `footer .perf,footer .stat{font-family:var(--vscode-editor-font-family,monospace);font-variant-numeric:tabular-nums}`
+  + `::-webkit-scrollbar{width:10px;height:10px}`
+  + `::-webkit-scrollbar-thumb{background:rgba(127,127,127,.35);border-radius:999px;border:2px solid transparent;background-clip:content-box}`
+  + `::-webkit-scrollbar-track{background:transparent}`
   + `</style>`;
 
 // The whole webview program. Kept as one string so the host owns exactly one
