@@ -137,6 +137,38 @@
         }
       ]
     },
+    "debuggers": [
+      {
+        "type": "stm32-dap",
+        "label": "STM32 DAP (pyOCD)",
+        "configurationAttributes": {
+          "attach": {
+            "required": [],
+            "properties": {
+              "elf": {
+                "type": "string",
+                "description": "Firmware ELF. Empty = last built ELF (resolved from stm32ext settings)."
+              },
+              "target": {
+                "type": "string",
+                "description": "pyOCD target id, e.g. stm32g474retx. Empty = resolved from the last build."
+              }
+            }
+          }
+        },
+        "configurationSnippets": [
+          {
+            "label": "STM32: Attach via pyOCD",
+            "description": "Attach to a running STM32 target and inspect globals in the native debug UI.",
+            "body": {
+              "type": "stm32-dap",
+              "request": "attach",
+              "name": "STM32 Attach"
+            }
+          }
+        ]
+      }
+    ],
     "configuration": {
       "title": "STM32 Extension",
       "properties": {
@@ -186,10 +218,10 @@
         },
         "stm32ext.pollHz": {
           "type": "number",
-          "default": 100,
+          "default": 50,
           "minimum": 1,
           "maximum": 200,
-          "description": "Live polling rate in Hz. Default 100Hz, up to 200Hz (G8/G12)."
+          "description": "Live polling rate in Hz. Default 50Hz, up to 200Hz (G8/G12)."
         },
         "stm32ext.uiFontPx": {
           "type": "number",
