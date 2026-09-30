@@ -23,6 +23,37 @@ export function formatCsv(rows: readonly LiveSample[]): string {
 }
 
 /**
+ * Collapse one tail batch to the latest sample per name, preserving the
+ * order of last occurrence.
+ *
+ * The sidecar logs one CSV row per leaf per tick (N leaves x Hz rows/s),
+ * but a display only needs the newest value per name. Forwarding every row
+ * to 3 webviews at 100Hz x 155 leaves meant ~40 postMessage/s x ~387 rows
+ * and a DOM write per row — the "使っていると重い" report. The CSV file on
+ * disk keeps the full rate; only the in-memory display path is coalesced.
+ */
+export function coalesceSamples(samples: readonly LiveSample[]): LiveSample[] {
+  const seen = new Set<string>();
+  let dup = false;
+  for (const s of samples) {
+    if (seen.has(s.name)) {
+      dup = true;
+      break;
+    }
+    seen.add(s.name);
+  }
+  if (!dup) {
+    return samples as LiveSample[];
+  }
+  const latest = new Map<string, LiveSample>();
+  for (const s of samples) {
+    latest.delete(s.name);
+    latest.set(s.name, s);
+  }
+  return [...latest.values()];
+}
+
+/**
  * The CSV header is a frozen acceptance contract, so a mismatch is reported
  * instead of being parsed as data (a rotated-in header row used to show up
  * as a bogus `name`/`value` sample).

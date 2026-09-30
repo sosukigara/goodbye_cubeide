@@ -177,13 +177,17 @@ const VAR_SCRIPT = `var __SEED = __VAR_SEED__;`
   + ` fillNames();`
   + ` rebuild();`
   + `}`
+  + `let paintQueued = false;`
   + `function onSamples(arr) {`
   + ` for (let i = 0; i < arr.length; i += 1) {`
   + `  const s = arr[i];`
   + `  if (!s || typeof s.name !== 'string' || s.name === '') continue;`
   + `  V.last.set(s.name, String(s.value === undefined || s.value === null ? '' : s.value));`
   + ` }`
-  + ` paintAll();`
+  + ` if (paintQueued) return;`
+  + ` paintQueued = true;`
+  + ` if (typeof setTimeout !== 'function') { paintQueued = false; paintAll(); return; }`
+  + ` setTimeout(() => { paintQueued = false; paintAll(); }, 100);`
   + `}`
   // Datallist depth sized off measured reality: the resolver reports ~355
   // leaves for unit_omni3 before arrays (more after), so 5000 options leave
@@ -200,7 +204,7 @@ const VAR_SCRIPT = `var __SEED = __VAR_SEED__;`
   + `function fillNames() {`
   + ` if (!namesBox) return;`
   + ` namesBox.textContent = '';`
-  + ` const keys = Array.from(V.types.keys());`
+  + ` const keys = Array.from(V.types.keys()).filter((k) => !isNoise(k));`
   + ` const cands = npCandidates(keys);`
   + ` const seen = Object.create(null);`
   + ` const out = [];`
@@ -230,15 +234,34 @@ const VAR_SCRIPT = `var __SEED = __VAR_SEED__;`
   + ` for (let i = 0; i < kids.length; i += 1) if (kids[i].getAttribute('data-name') === name) return kids[i];`
   + ` return null;`
   + `}`
+  + `function isNoise(n) {`
+  + ` const s = String(n === undefined || n === null ? '' : n);`
+  + ` if (s === '') return true;`
+  + ` if (s.charAt(0) === '_') return true;`
+  + ` if (s.indexOf('._M_') >= 0) return true;`
+  + ` return false;`
+  + `}`
+  + `function childLeaves(name) {`
+  + ` const out = [];`
+  + ` const keys = Array.from(V.types.keys());`
+  + ` for (let i = 0; i < keys.length; i += 1) {`
+  + `  const k = keys[i];`
+  + `  if (k !== name && !isNoise(k) && npIsUnder(k, name)) out.push(k);`
+  + ` }`
+  + ` return out;`
+  + `}`
   + `function rebuild() {`
   + ` if (!tbody) return;`
   + ` tbody.textContent = '';`
   + ` for (let i = 0; i < V.order.length; i += 1) tbody.appendChild(mkRow(V.order[i]));`
-  + ` const rest = Array.from(V.types.keys()).filter((n) => !V.watched[n]).sort();`
-  + ` for (let i = 0; i < rest.length; i += 1) tbody.appendChild(mkRow(rest[i]));`
+  + ` const leafKeys = Array.from(V.types.keys()).filter((k) => !isNoise(k));`
+  + ` const all = npCandidates(leafKeys);`
+  + ` for (let i = 0; i < all.length; i += 1) { if (!V.watched[all[i]]) tbody.appendChild(mkRow(all[i])); }`
   + ` paintAll();`
   + `}`
   + `function mkRow(name) {`
+  + ` const kids = childLeaves(name);`
+  + ` if (kids.length > 0) return mkGroupRow(name, kids);`
   + ` const tr = mk('tr');`
   + ` tr.setAttribute('data-name', name);`
   + ` tr.setAttribute('data-watched', V.watched[name] ? '1' : '0');`
@@ -259,6 +282,28 @@ const VAR_SCRIPT = `var __SEED = __VAR_SEED__;`
   + ` const add = mk('button'); add.textContent = '+'; add.title = name + ' を監視に追加';`
   + ` add.addEventListener('click', () => addName(name));`
   + ` const del = mk('button'); del.textContent = 'x'; del.title = name + ' を監視から除外';`
+  + ` del.addEventListener('click', () => removeName(name));`
+  + ` o.appendChild(add); o.appendChild(document.createTextNode(' ')); o.appendChild(del);`
+  + ` tr.appendChild(n); tr.appendChild(v); tr.appendChild(w); tr.appendChild(o);`
+  + ` return tr;`
+  + `}`
+  + `function mkGroupRow(name, kids) {`
+  + ` const tr = mk('tr');`
+  + ` tr.setAttribute('data-name', name);`
+  + ` tr.setAttribute('data-group', '1');`
+  + ` tr.setAttribute('data-count', String(kids.length));`
+  + ` tr.setAttribute('data-watched', V.watched[name] ? '1' : '0');`
+  + ` const n = mk('td'); n.className = 'n'; n.textContent = name + ' (' + kids.length + '件)';`
+  + ` n.title = name + ' — クリックで配下に絞り込み表示';`
+  + ` n.addEventListener('click', () => { if (search) { search.value = name; } V.query = name; paintAll(); });`
+  + ` const v = mk('td'); v.className = 'v'; v.textContent = kids.length + '件';`
+  + ` v.title = name + ' 配下の変数 (クリックで絞り込み)';`
+  + ` const w = mk('td'); w.className = 'w';`
+  + ` w.textContent = '—';`
+  + ` const o = mk('td'); o.className = 'o';`
+  + ` const add = mk('button'); add.textContent = '+'; add.title = name + ' 配下' + kids.length + '件を監視に追加';`
+  + ` add.addEventListener('click', () => addName(name));`
+  + ` const del = mk('button'); del.textContent = 'x'; del.title = name + ' 配下を監視から除外';`
   + ` del.addEventListener('click', () => removeName(name));`
   + ` o.appendChild(add); o.appendChild(document.createTextNode(' ')); o.appendChild(del);`
   + ` tr.appendChild(n); tr.appendChild(v); tr.appendChild(w); tr.appendChild(o);`
@@ -307,6 +352,11 @@ const VAR_SCRIPT = `var __SEED = __VAR_SEED__;`
   + `  const name = tr.getAttribute('data-name') || '';`
   + `  tr.setAttribute('data-hidden', (filt !== '' && name.toLowerCase().indexOf(filt) < 0) ? '1' : '0');`
   + `  const cells = tr.children;`
+  + `  if (tr.getAttribute('data-group') === '1') {`
+  + `   cells[1].textContent = tr.getAttribute('data-count') + '件';`
+  + `   cells[1].title = name + ' 配下の変数 (行名クリックで絞り込み)';`
+  + `   continue;`
+  + `  }`
   + `  const raw = V.last.has(name) ? V.last.get(name) : '';`
   + `  const d = decode(name, raw);`
   + `  cells[1].textContent = raw === '' ? '-' : d.label;`

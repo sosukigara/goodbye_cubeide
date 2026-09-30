@@ -469,7 +469,7 @@ describe("graph CSV export has a host handler", () => {
     expect(extensionSource).toContain("writeGraphCsv");
     // The archived rows are the selected series only, and they keep the
     // frozen 4-column schema.
-    expect(extensionSource).toMatch(/this\.selected\.includes\(s\.name\)/);
+    expect(extensionSource).toMatch(/this\.selected\.includes\(s\.name\)|wanted\.has\(s\.name\)/);
     expect(extensionSource).toContain("formatCsv(rows)");
   });
 });

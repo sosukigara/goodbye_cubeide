@@ -255,14 +255,40 @@ describe("variable panel surface", () => {
 });
 
 describe("variable panel live values", () => {
+  it("hides compiler and libc noise (_Z mangled, __ internals) from the auto list", () => {
+    const p = boot();
+    p.post(types({
+      "sys.loop_hz": LEAF(),
+      "_ZN10__cxxabiv119__terminate_handlerE": LEAF(),
+      __sf: LEAF(),
+      "_impure_ptr.data._errno": LEAF(),
+    }));
+    p.post({ kind: "live-watchlist", names: [] });
+    expect(p.rowNames()).toEqual(["sys", "sys.loop_hz"]);
+    expect(p.valueOf("sys")).toBe("1件");
+  });
+
+  it("renders a struct group as a counted row that filters to its leaves on click", () => {
+    const p = boot();
+    p.post(types({
+      "debug.target_transform.vx": LEAF(),
+      "debug.target_transform.vy": LEAF(),
+    }));
+    p.post({ kind: "live-watchlist", names: [] });
+    expect(p.rowNames()).toEqual(["debug", "debug.target_transform", "debug.target_transform.vx", "debug.target_transform.vy"]);
+    expect(p.valueOf("debug")).toBe("2件");
+    expect(p.valueOf("debug.target_transform")).toBe("2件");
+  });
+
   it("creates a row for every watched name before the first sample batch", () => {
     const p = boot();
     p.post(types({ "sys.loop_hz": LEAF() }));
     p.post({ kind: "live-watchlist", names: ["sys.loop_hz"] });
     // No sample has arrived: the row must already exist with a placeholder,
     // never a missing row or a blank value cell.
-    expect(p.rowNames()).toEqual(["sys.loop_hz"]);
+    expect(p.rowNames()).toEqual(["sys.loop_hz", "sys"]);
     expect(p.valueOf("sys.loop_hz")).toBe("-");
+    expect(p.valueOf("sys")).toBe("1件");
   });
 
   it("creates a row even for a watched name that collides with Object.prototype", () => {
@@ -274,7 +300,7 @@ describe("variable panel live values", () => {
     const p = boot();
     p.post(types({ constructor: LEAF(), "sys.loop_hz": LEAF() }));
     p.post({ kind: "live-watchlist", names: ["sys.loop_hz", "constructor"] });
-    expect(p.rowNames()).toEqual(["sys.loop_hz", "constructor"]);
+    expect(p.rowNames()).toEqual(["sys.loop_hz", "constructor", "sys"]);
     expect(p.valueOf("constructor")).toBe("-");
   });
 
@@ -332,7 +358,7 @@ describe("variable panel live values", () => {
     const p = boot([], "var-add");
     p.post(types({ "sys.loop_hz": LEAF() }));
     p.post({ kind: "live-watchlist", names: ["sys.loop_hz"] });
-    expect(p.rowNames()).toEqual(["sys.loop_hz"]);
+    expect(p.rowNames()).toEqual(["sys.loop_hz", "sys"]);
     p.post({ kind: "live-sample", samples: [sample("sys.loop_hz", "0x00000ea7", 0)] });
     expect(p.valueOf("sys.loop_hz")).toBe("3751");
     p.post({ kind: "live-sample", samples: [sample("sys.loop_hz", "0x00000ea8", 10)] });
@@ -343,14 +369,14 @@ describe("variable panel live values", () => {
     p.el("var-picker").value = "sys.loop_hz";
     p.el("var-remove").fire("click");
     expect(p.posted).toEqual([{ kind: "var-remove", name: "sys.loop_hz" }]);
-    expect(p.rowNames()).toEqual(["sys.loop_hz"]);
+    expect(p.rowNames()).toEqual(["sys", "sys.loop_hz"]);
     expect(watchedOf(p, "sys.loop_hz")).toBe("0");
   });
 
   it("lists every live-types leaf even with no live-watchlist at all", () => {
     const p = boot();
     p.post(types({ "sys.c": LEAF(), "sys.a": LEAF(), "sys.b": LEAF() }));
-    expect(p.rowNames()).toEqual(["sys.a", "sys.b", "sys.c"]);
+    expect(p.rowNames()).toEqual(["sys", "sys.a", "sys.b", "sys.c"]);
     expect(p.valueOf("sys.a")).toBe("-");
     expect(p.valueOf("sys.b")).toBe("-");
     expect(p.valueOf("sys.c")).toBe("-");
@@ -361,14 +387,14 @@ describe("variable panel live values", () => {
     const p = boot();
     p.post(types({ "sys.c": LEAF(), "sys.a": LEAF(), "sys.b": LEAF() }));
     p.post({ kind: "live-watchlist", names: ["sys.c"] });
-    expect(p.rowNames()).toEqual(["sys.c", "sys.a", "sys.b"]);
+    expect(p.rowNames()).toEqual(["sys.c", "sys", "sys.a", "sys.b"]);
     expect(watchedOf(p, "sys.c")).toBe("1");
     expect(watchedOf(p, "sys.a")).toBe("0");
     expect(watchedOf(p, "sys.b")).toBe("0");
     // Search filters but never deletes: the unwatched rows are still there.
     p.el("var-search").value = "sys.a";
     p.el("var-search").fire("input");
-    expect(p.rowNames()).toEqual(["sys.c", "sys.a", "sys.b"]);
+    expect(p.rowNames()).toEqual(["sys.c", "sys", "sys.a", "sys.b"]);
     expect(hiddenOf(p, "sys.a")).toBe("0");
     expect(hiddenOf(p, "sys.c")).toBe("1");
   });

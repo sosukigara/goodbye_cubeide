@@ -577,6 +577,16 @@ const GRAPH_SCRIPT = `var __SEED = __GRAPH_SEED__;`
   + ` for (let i = 0; i < hit.length; i += 1) vscode.postMessage({ kind: 'graph-remove', name: hit[i] });`
   + ` clearErr();`
   + `}`
+  + `function removeAll() {`
+  + ` if (G.order.length === 0) { note('削除する系列がありません'); return; }`
+  + ` const hit = G.order.slice();`
+  + ` dropSeries(hit);`
+  + ` rebuild();`
+  + ` schedule();`
+  + ` for (let i = 0; i < hit.length; i += 1) vscode.postMessage({ kind: 'graph-remove', name: hit[i] });`
+  + ` note(hit.length + ' 件の系列を削除しました');`
+  + ` clearErr();`
+  + `}`
   // The host owns the archive and the save dialog; the panel only asks.
   + `function downloadCsv() {`
   + ` vscode.postMessage({ kind: 'graph-download-csv' });`
@@ -615,6 +625,7 @@ const GRAPH_SCRIPT = `var __SEED = __GRAPH_SEED__;`
   + `if (typeof ResizeObserver === 'function' && wrap) { new ResizeObserver(schedule).observe(wrap); }`
   + `q('[data-testid="graph-add"]').addEventListener('click', () => add(picker ? picker.value : ''));`
   + `q('[data-testid="graph-remove"]').addEventListener('click', () => remove(picker ? picker.value : ''));`
+  + `q('[data-testid="graph-clear"]').addEventListener('click', removeAll);`
   + `q('[data-testid="graph-download-csv"]').addEventListener('click', downloadCsv);`
   + `if (picker) picker.addEventListener('keydown', (e) => { if (e && e.key === 'Enter') add(picker.value); });`
   + `if (winSel) winSel.addEventListener('change', () => setWindow(parseInt(winSel.value, 10)));`
@@ -640,7 +651,8 @@ export function graphPanelHtml(selected: readonly string[] = []): string {
     + `<input data-testid="graph-var-picker" type="text" list="graph-names" placeholder="sys.loop_hz" aria-label="系列名">`
     + `<datalist id="graph-names" data-testid="graph-names"></datalist>`
     + `<button data-testid="graph-add" type="button" class="primary" title="入力した名前を系列に追加">追加</button>`
-    + `<button data-testid="graph-remove" type="button" title="入力した名前を系列から削除">削除</button></div>`
+    + `<button data-testid="graph-remove" type="button" title="入力した名前を系列から削除">削除</button>`
+  + `<button data-testid="graph-clear" type="button" title="登録中の系列をすべて削除">全削除</button></div>`
     + `<div class="grp"><span class="lbl">表示範囲</span><select data-testid="graph-window" aria-label="時間幅">`
     + `<option value="1000">1s</option><option value="5000">5s</option>`
     + `<option value="10000" selected>10s</option><option value="30000">30s</option>`
