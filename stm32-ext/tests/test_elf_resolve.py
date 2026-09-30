@@ -722,3 +722,73 @@ def test_catalog_fallback_backend_agrees(catalog_elf, tmp_path):
     assert fallback["symbols"] == reference["symbols"]
     assert fallback["index"] == reference["index"]
     assert fallback["catalog_skipped"] == reference["catalog_skipped"]
+
+
+# ---------------------------------------------------------------------------
+# catalog-only: DWARF present but no `debug` symbol at all. The resolver must
+# exit 0 with a usable catalog (roots/flats/index) and an explicit zero
+# window, instead of failing with exit 2. Without --catalog the old
+# MissingDebug exit-2 behaviour is kept.
+# ---------------------------------------------------------------------------
+
+FIXTURE_C_NO_DEBUG = r"""
+#include <stdint.h>
+uint32_t extra_ticks = 0x12345678;
+__attribute__((section(".noinit"))) uint8_t noinit_blob[8];
+"""
+
+
+@pytest.fixture(scope="session")
+def no_debug_elf(tmp_path_factory):
+    """DWARF ELF with RAM variables but no `debug` symbol."""
+    if GCC is None:
+        pytest.skip("arm-none-eabi-gcc not available for the DWARF fixture")
+    return _build_fixture(tmp_path_factory.mktemp("nodebug"), 5,
+                           FIXTURE_C_NO_DEBUG)
+
+
+def test_no_debug_symbol_yields_catalog_only_body(no_debug_elf):
+    res = resolve(no_debug_elf, args=["--all-members", "--catalog"])
+    assert res["tree"] is None
+    assert res["size"] == 0
+    assert res["base"] == "0x00000000"
+    assert res["end"] == "0x00000000"
+    assert res["has_debug_info"] is True
+    assert isinstance(res["catalog_skipped"], int)
+    names = {r["name"] for r in res["roots"]}
+    assert "extra_ticks" in names
+    assert "noinit_blob" in names
+    assert len(res["symbols"]) > 0
+    assert {s["name"] for s in res["symbols"]} == set(res["index"])
+    assert res["unresolved"] == []
+
+
+def test_no_debug_without_catalog_still_exit_2(no_debug_elf):
+    p = run([sys.executable, RESOLVE, no_debug_elf, "--all-members", "--json"])
+    assert p.returncode == 2
+    assert "debug" in p.stderr
+
+
+def test_no_debug_fallback_backend_agrees(no_debug_elf, tmp_path):
+    p = run([sys.executable, RESOLVE, no_debug_elf, "--all-members",
+             "--catalog", "--json"],
+            env={**os.environ, "PYTHONPATH": _blocked_pyelftools(tmp_path)})
+    assert p.returncode == 0, p.stderr
+    fallback = json.loads(p.stdout)
+    assert fallback["backend"] == "nm+readelf"
+    assert fallback["tree"] is None
+    assert fallback["size"] == 0
+    assert fallback["base"] == "0x00000000"
+    reference = resolve(no_debug_elf, args=["--all-members", "--catalog"])
+    assert fallback["roots"] == reference["roots"]
+    assert fallback["symbols"] == reference["symbols"]
+    assert fallback["index"] == reference["index"]
+
+
+def test_debug_global_shape_unchanged(catalog_elf):
+    res = resolve(catalog_elf, args=["--all-members", "--catalog"])
+    assert res["tree"] is not None
+    assert res["tree"]["type"] == "TelemetryCatalog"
+    assert res["size"] > 0
+    assert res["base"] != "0x00000000"
+    assert res["unresolved"] == []

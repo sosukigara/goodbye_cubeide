@@ -79,6 +79,12 @@ STRIP_ERROR = (
 MISSING_DEBUG = ("symbol `debug` not found; is this a firmware ELF with "
                  "debug.hpp linked in?")
 
+CATALOG_ONLY_NOTICE = (
+    "project has no DebugGlobal `debug` symbol; "
+    "using the RAM-variable catalog instead "
+    "(DWARF is present but the `debug` struct is absent)"
+)
+
 STRUCT_NAME = "DebugGlobal"
 
 RAM_SECTION_PREFIXES = (".data", ".bss", ".ccmram", ".ram", ".sram",
@@ -781,16 +787,14 @@ def pyelftools_backend(elf, struct_name=STRUCT_NAME, want_catalog=False,
                     base = sym["st_value"]
                     size = sym["st_size"]
                     break
-            if base is None:
-                return {"stripped": False, "missing": True}
             has_di = elffile.get_section_by_name(".debug_info") is not None
-            catalog = None
             if has_di and want_catalog:
+                # Catalog first: it must be built even when the `debug`
+                # symbol is absent (catalog-only resolution). The tree model
+                # below still raises for a present-but-unresolvable `debug`.
                 dwarf = elffile.get_dwarf_info()
                 root_die, actual, variables = \
                     _py_root_from_debug_variable(dwarf, collect=True)
-                model = _model_from_root_die(root_die, actual, struct_name,
-                                             dwarf)
                 by_linkage, by_name = {}, {}
                 for linkage, name, ref in variables:
                     if linkage and linkage not in by_linkage:
@@ -802,13 +806,30 @@ def pyelftools_backend(elf, struct_name=STRUCT_NAME, want_catalog=False,
                     _py_candidates(elffile), prefix)
                 catalog = {"roots": roots, "flats": flats,
                            "skipped": skipped}
-            else:
-                model = pyelftools_model(elffile, struct_name) \
-                    if has_di else None
+                if base is None:
+                    # No DebugGlobal window: report the missing struct
+                    # alongside the catalog rather than instead of it.
+                    return {
+                        "stripped": False, "missing": True,
+                        "has_debug_info": has_di, "model": None,
+                        "catalog": catalog, "backend": "pyelftools",
+                    }
+                model = _model_from_root_die(root_die, actual, struct_name,
+                                             dwarf)
+                return {
+                    "stripped": False, "base": base, "size": size,
+                    "has_debug_info": has_di, "model": model,
+                    "catalog": catalog, "backend": "pyelftools",
+                }
+            if base is None:
+                return {"stripped": False, "missing": True}
+            has_di = elffile.get_section_by_name(".debug_info") is not None
+            model = pyelftools_model(elffile, struct_name) \
+                if has_di else None
             return {
                 "stripped": False, "base": base, "size": size,
                 "has_debug_info": has_di, "model": model,
-                "catalog": catalog, "backend": "pyelftools",
+                "catalog": None, "backend": "pyelftools",
             }
     except MissingDebug:
         raise
@@ -845,7 +866,8 @@ def _parse_int(text):
     return int(token, 16) if "x" in token else int(token, 10)
 
 
-def readelf_die_model(elf, prefix, struct_name=STRUCT_NAME):
+def readelf_die_model(elf, prefix, struct_name=STRUCT_NAME,
+                      allow_missing=False):
     """Parse `readelf --debug-dump=info` into the same node model."""
     p = run([f"{prefix}readelf", "--debug-dump=info", elf])
     if p.returncode != 0:
@@ -904,7 +926,7 @@ def readelf_die_model(elf, prefix, struct_name=STRUCT_NAME):
                     and n["name"] == struct_name:
                 root = n
                 break
-    if root is None:
+    if root is None and not allow_missing:
         raise MissingDebug(_no_root_message(actual, struct_name))
     stack = []
     for n in nodes:
@@ -959,6 +981,22 @@ def resolve(elf, prefix="arm-none-eabi-", struct_name=STRUCT_NAME,
     elif result is not None and result.get("stripped"):
         raise StripError(STRIP_ERROR)
     elif result is not None and result.get("missing"):
+        catalog = result.get("catalog")
+        if want_catalog and catalog is not None:
+            # No DebugGlobal window: report an explicit zero window so the
+            # host routes every watched symbol through --extra instead of
+            # mis-classifying them into a synthesized range.
+            return {
+                "elf": elf,
+                "base": "0x00000000",
+                "size": 0,
+                "end": "0x00000000",
+                "has_debug_info": result.get("has_debug_info", True),
+                "backend": result.get("backend", "pyelftools"),
+                "tree": None,
+                "leaves": [],
+                "catalog": catalog,
+            }
         raise MissingDebug(MISSING_DEBUG)
     else:
         # pyelftools absent/failed -> nm + readelf wrap. P0-14: this branch
@@ -969,6 +1007,29 @@ def resolve(elf, prefix="arm-none-eabi-", struct_name=STRUCT_NAME,
         if not has_sym and not has_di:
             raise StripError(STRIP_ERROR)
         if "debug" not in syms:
+            if want_catalog and has_di and has_sym:
+                try:
+                    cat_model = readelf_die_model(
+                        elf, prefix, struct_name, allow_missing=True)
+                except Exception:
+                    cat_model = None
+                if cat_model is not None:
+                    try:
+                        catalog = _catalog_from_readelf(elf, prefix, cat_model)
+                    except Exception:
+                        catalog = None
+                    if catalog is not None:
+                        return {
+                            "elf": elf,
+                            "base": "0x00000000",
+                            "size": 0,
+                            "end": "0x00000000",
+                            "has_debug_info": has_di,
+                            "backend": backend,
+                            "tree": None,
+                            "leaves": [],
+                            "catalog": catalog,
+                        }
             raise MissingDebug(MISSING_DEBUG)
         base, size, _typ = syms["debug"]
         if not has_di:
@@ -1256,6 +1317,10 @@ def _main(argv):
     except (StripError, MissingDebug) as exc:
         print(f"elf_resolve: {exc}\nelf={elf}", file=sys.stderr)
         return 2
+
+    if res.get("tree") is None and res.get("catalog") is not None:
+        print(f"elf_resolve: {CATALOG_ONLY_NOTICE}\nelf={elf}",
+              file=sys.stderr)
 
     by_name = {leaf["name"]: leaf for leaf in res["leaves"]}
     if want_all:

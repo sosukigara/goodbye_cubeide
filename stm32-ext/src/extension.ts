@@ -21,8 +21,6 @@ import { spawnCli } from "./flash/spawn";
 import { runPyocdFlash } from "./flash/pyocd";
 import {
   decideWrite,
-  isMotorDrivePath,
-  MOTOR_DRIVE_WARNING,
 } from "./live/allowlist";
 import {
   buildWriteRequest,
@@ -44,7 +42,6 @@ import {
 } from "./env/venv";
 import {
   assertCsvHeader,
-  decodeValue,
   dropStats,
   encodeWriteValue,
   formatCsv,
@@ -1498,8 +1495,8 @@ export class LivePanelProvider {
    * resolved through `nm` instead, exactly as the watch path does.
    *
    * Resolution is the guard that matters now that the DebugGlobal fence is
-   * gone: a name that no tool can place in memory is refused before the
-   * confirmation modal is ever shown.
+   * gone: a name that no tool can place in memory is refused up front,
+   * before any bus write.
    */
   private async writeFlow(name: string, value: string): Promise<void> {
     const stamp = new Date().toISOString();
@@ -1509,10 +1506,9 @@ export class LivePanelProvider {
     const done = (message: string, ok: boolean): void => {
       this.post({ kind: "live-write-result", name, ok, message });
     };
-    // A write needs the sidecar's stdin, and the confirmation modal is a
-    // question the user can only answer meaningfully if the write is actually
-    // going to happen. Refuse up front: asking for a confirmation that then
-    // fails leaves the user having paid for a dialog and gotten nothing.
+    // A write needs the sidecar's stdin, so refuse up front when there is
+    // no session or no resolution: failing fast keeps the refusal
+    // attributable to the row that asked instead of reaching the bus.
     const stdin = this.child?.stdin;
     if (stdin === undefined || stdin === null || stdin.destroyed) {
       const reason = "refused: no live session (start 監視開始 first)";
@@ -1556,10 +1552,9 @@ export class LivePanelProvider {
       return;
     }
     const bits = encoded.bits;
-    // Pre-modal probe: decideWrite is pure (no side effects — verdict + audit
-    // string only), so probe with confirmed:true to check range/resolution.
-    // Probing with confirmed:false would ALWAYS refuse and make the modal
-    // below dead code. The modal + final confirmed:true gate stay mandatory.
+    // decideWrite is pure (no side effects — verdict + audit string only),
+    // so check range/resolution with confirmed:true as the normal path: a
+    // valid write commits on Enter with no dialog.
     const verdict = decideWrite(
       { target: { name, address: sym.address, size: sym.size }, value: bits, confirmed: true },
       { base: Number.parseInt(sym.address, 16), size: sym.size },
@@ -1570,36 +1565,15 @@ export class LivePanelProvider {
       done(verdict.reason, false);
       return;
     }
-    // P0-4: the value the user edits is the decoded one, and the same
-    // decoder draws the table, so the confirm dialog must show it too.
-    const current = this.lastValueOf(name);
-    const shown = current === undefined ? "" : ` 現在値: ${decodeValue(current, this.leafMeta.get(name))}`;
-    const warn = isMotorDrivePath(name) ? `${MOTOR_DRIVE_WARNING}\n\n` : "";
-    const confirm = await vscode.window.showWarningMessage(
-      `${warn}Write ${value} to ${name}@${sym.address}? (${sym.type}, ${sym.size} byte${shown})\n→ 0x${BigInt(bits).toString(16).padStart(sym.size * 2, "0")}\n(${sym.size}-byte symbol; the sidecar re-checks this extent)`,
-      { modal: true },
-      "Write",
-    );
-    if (confirm !== "Write") {
-      this.channel.appendLine(`[live-write] ${stamp} REFUSED(modal confirmation not given) ${name}@${sym.address} value=${value}`);
-      done("refused: modal confirmation not given", false);
-      return;
-    }
-    const finalVerdict = decideWrite(
-      { target: { name, address: sym.address, size: sym.size }, value: bits, confirmed: true },
-      { base: Number.parseInt(sym.address, 16), size: sym.size },
-      stamp,
-    );
-    if (!finalVerdict.ok) {
-      this.channel.appendLine(finalVerdict.audit);
-      done(finalVerdict.reason, false);
-      return;
-    }
     // Transport write goes through the pyOCD sidecar, which owns the single
     // probe session: the request goes down the child's stdin and the answer
     // comes back on stdout. The sidecar re-checks the write against the
     // extent this request declares, then reads the value back to confirm.
-    this.channel.appendLine(finalVerdict.audit);
+    this.channel.appendLine(verdict.audit);
+    // No dialog stands between validation and dispatch, so the output channel
+    // is the only record of what was written: decoded text and hex together.
+    this.channel.appendLine(
+      `[live-write] ${stamp} WRITE ${name}@${sym.address} size=${sym.size} value=${value} hex=0x${BigInt(bits).toString(16).padStart(sym.size * 2, "0")}`);
     const result = await this.sendWrite(sym.address, sym.size, bits);
     if (result.ok) {
       const note = result.note === undefined ? "" : ` — ${result.note}`;
@@ -1611,17 +1585,6 @@ export class LivePanelProvider {
     const reason = result.error ?? "sidecar reported an unknown failure";
     this.channel.appendLine(`[live-write] ${stamp} FAILED(${reason}) ${name}@${sym.address}`);
     done(`書き込み失敗: ${reason}`, false);
-  }
-
-  /** Most recent raw value hex for a watched name, or undefined if unseen. */
-  private lastValueOf(name: string): string | undefined {
-    for (let i = this.samples.length - 1; i >= 0; i--) {
-      const s = this.samples[i];
-      if (s !== undefined && s.name === name) {
-        return s.value;
-      }
-    }
-    return undefined;
   }
 
   /** One write over the running sidecar's stdin, answered on its stdout. */

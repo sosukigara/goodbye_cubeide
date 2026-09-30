@@ -206,21 +206,42 @@ describe("allowlist writes", () => {
     }
   });
 
-  it("writeFlow orchestration contract: pre-modal probe (confirmed:true) checks the extent, final gate enforces the modal", () => {
-    // Regression for oracle MUST-FIX: writeFlow must probe with confirmed:true
-    // pre-modal (pure function, no side effects). Probing with confirmed:false
-    // always refuses and would make the confirm modal dead code.
+  it("writeFlow commits on Enter with no modal: confirmed:true is the normal path, extent failures never dispatch", () => {
+    // A memory write from the Variables tab goes straight through to the
+    // sidecar after validation — no showWarningMessage in between. decideWrite
+    // stays pure (verdict + audit string only), so confirmed:true is the
+    // normal path and a write that does not fit its extent never dispatches.
     const req = { target: { name: "sys.loop_hz", address: "0x200000bc", size: 4 }, value: "0x1" };
     const probe = decideWrite({ ...req, confirmed: true }, RANGE, STAMP);
-    expect(probe.ok).toBe(true); // a target that fits its extent reaches the modal
-    const noConfirm = decideWrite({ ...req, confirmed: false }, RANGE, STAMP);
-    expect(noConfirm.ok).toBe(false); // dismissed modal stays refused
+    expect(probe.ok).toBe(true); // a target that fits its extent dispatches with no dialog
     const overruns = decideWrite(
       { target: { name: "evil", address: "0x20001000", size: 4 }, value: "0x1", confirmed: true },
       RANGE,
       STAMP,
     );
-    expect(overruns.ok).toBe(false); // a write that does not fit never reaches the modal
+    expect(overruns.ok).toBe(false); // a write that does not fit never reaches the sidecar
+    // Pin the new behaviour in the host: writeFlow shows no modal, still
+    // dispatches through sendWrite, and logs a WRITE audit line (decoded
+    // text + hex) since the output channel is the only remaining record.
+    const start = source.indexOf("private async writeFlow");
+    const end = source.indexOf("/** One write over the running sidecar's stdin", start);
+    const writeFlow = source.slice(start, end === -1 ? undefined : end);
+    expect(start).not.toBe(-1);
+    expect(writeFlow).not.toContain("showWarningMessage");
+    expect(writeFlow).toContain("sendWrite");
+    expect(writeFlow).toContain("[live-write]");
+    expect(writeFlow).toMatch(/WRITE \$\{name\}@\$\{sym\.address\}/);
+  });
+
+  it("the modals that must survive still call showWarningMessage", () => {
+    // The live-write modal is gone, and this removal must not silently
+    // spread: probe-conflict and flash confirmations stay modal.
+    expect(source).toContain("プローブ競合の可能性");
+    expect(source).toContain("強制終了しますか?");
+    expect(source).toContain("強制的に取り直しますか?");
+    expect(source).toContain("Flash ${elfPath}? This overwrites target firmware.");
+    expect(source).toContain("Build OK. Flash ${elfPath}? This overwrites target firmware.");
+    expect(source).toContain("{ modal: true }");
   });
 });
 

@@ -431,14 +431,13 @@ describe("P0-4 / D12: the write path carries the leaf width", () => {
   it("refuses a width the sidecar cannot move instead of failing opaquely", () => {
     expect(extensionSource).toContain("WRITE_WIDTHS.includes(sym.size)");
     // The value sent to the sidecar is the ENCODED bits, not the text the user
-    // typed: the prompt is seeded with the decoded value while the sidecar's
-    // protocol is integer-only.
+    // typed: the table decodes by type, and the sidecar's protocol is
+    // integer-only.
     expect(extensionSource).toMatch(/sendWrite\(sym\.address, sym\.size, bits\)/);
     expect(extensionSource).toContain("encodeWriteValue(value");
   });
 
-  it("decodes by type, so the write dialog shows the real value", () => {
-    expect(extensionSource).toContain("decodeValue(current, this.leafMeta.get(name))");
+  it("decodes by type, so the value the user reads is the value written", () => {
     expect(decodeValue("0x00000508", { size: 4, kind: "scalar", signed: false, type: "uint32_t" })).toBe("1288");
     expect(decodeValue("0xffffffff", { size: 4, kind: "scalar", signed: true, type: "int" })).toBe("-1");
     expect(decodeValue("0x01", { size: 1, kind: "bool", signed: false, type: "bool" })).toBe("true");
