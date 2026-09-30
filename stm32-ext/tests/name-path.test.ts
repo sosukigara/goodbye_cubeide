@@ -13,6 +13,7 @@ import {
   ancestorsOf,
   completionCandidates,
   descendantsOf,
+  isNoiseVariable,
   isUnder,
   lastSegment,
   parentOf,
@@ -27,7 +28,7 @@ import {
 function loadPanelHelpers(): Record<string, (...args: unknown[]) => unknown> {
   const scope: Record<string, unknown> = {};
   const factory = new Function(
-    `${NAME_PATH_JS}\nreturn { npLastSegment, npParentOf, npAncestorsOf, npIsUnder, npDescendantsOf, npCandidates, npComparePath };`,
+    `${NAME_PATH_JS}\nreturn { npLastSegment, npParentOf, npAncestorsOf, npIsUnder, npDescendantsOf, npCandidates, npComparePath, npIsNoise };`,
   );
   return factory() as Record<string, (...args: unknown[]) => unknown>;
 }
@@ -164,6 +165,20 @@ describe("the webview twin agrees with the host", () => {
   it("produces the same candidate set, prototype names included", () => {
     const paths = ["constructor.foo", "measure.drive_target_radps[0]", "measure.a"];
     expect(panel["npCandidates"]!(paths)).toEqual(completionCandidates(paths));
+  });
+
+  it("agrees on noise (mangled, dunder and std internals)", () => {
+    const names = [
+      "sys.loop_hz", "debug.target_transform.vx", "constructor",
+      "_ZN10__cxxabiv119__terminate_handlerE", "__sf", "__env",
+      "_impure_ptr", "foo._M_elems[0].State", "",
+    ];
+    for (const name of names) {
+      expect(panel["npIsNoise"]!(name), name).toBe(isNoiseVariable(name));
+    }
+    expect(isNoiseVariable("sys.loop_hz")).toBe(false);
+    expect(isNoiseVariable("_ZN10__cxxabiv119__terminate_handlerE")).toBe(true);
+    expect(isNoiseVariable("__sf")).toBe(true);
   });
 
   it("is safe to inline in a <script> block", () => {

@@ -94,7 +94,7 @@ import {
   parseBuildPanelMessage,
   unmountBuildPanel,
 } from "./live/buildPanel";
-import { isUnder } from "./live/namePath";
+import { completionCandidates, isNoiseVariable, isUnder } from "./live/namePath";
 import { buildWatchPickItems } from "./live/pickItems";
 
 /**
@@ -737,6 +737,14 @@ export class LivePanelProvider {
   /** Restart polling (used after a flash that paused the session). */
   async restartLive(): Promise<void> {
     await this.restart("start");
+  }
+  /** QuickPick candidates: resolved leaves plus their struct groups. */
+  variableCandidates(): string[] {
+    const leaves = [...this.leafMeta.keys()].filter((n) => !isNoiseVariable(n));
+    if (leaves.length === 0) {
+      return [];
+    }
+    return completionCandidates(leaves);
   }
   /** Session lock path (shared across VSCode windows on this machine). */
   private lockPath(): string {
@@ -2920,6 +2928,44 @@ export function activate(context: vscode.ExtensionContext): void {
   // The sidebar keeps Project/Build/Flash/Log; Graph and Variables each have
   // their own editor-area panel.
   let variableWebviewPanel: vscode.WebviewPanel | undefined;
+  const pickVariablesFlow = async (query: string): Promise<void> => {
+    const candidates = livePanel.variableCandidates();
+    if (candidates.length === 0) {
+      void vscode.window.showWarningMessage(
+        "STM32: 選択できる変数がありません — 先にビルドしてください",
+      );
+      return;
+    }
+    const qp = vscode.window.createQuickPick();
+    qp.items = candidates.map((name) => ({ label: name }));
+    qp.value = query;
+    qp.canSelectMany = true;
+    qp.placeholder = "監視する変数を選択 (例: sys. と打つとsysメンバーのみ表示)";
+    const chosen = await new Promise<readonly string[] | undefined>((resolve) => {
+      let done = false;
+      qp.onDidAccept(() => {
+        if (!done) {
+          done = true;
+          resolve(qp.selectedItems.map((i) => i.label));
+          qp.dispose();
+        }
+      });
+      qp.onDidHide(() => {
+        if (!done) {
+          done = true;
+          resolve(undefined);
+          qp.dispose();
+        }
+      });
+      qp.show();
+    });
+    if (chosen === undefined) {
+      return;
+    }
+    for (const name of chosen) {
+      watchBatcher.push(name, true);
+    }
+  };
   const openVariablePanel = (): void => {
     if (variableWebviewPanel !== undefined) {
       variableWebviewPanel.reveal(vscode.ViewColumn.Beside, true);
@@ -2940,6 +2986,10 @@ export function activate(context: vscode.ExtensionContext): void {
     panel.webview.onDidReceiveMessage((raw: unknown) => {
       const msg = parseVariablePanelMessage(raw);
       if (msg === null) {
+        return;
+      }
+      if (msg.kind === "var-pick") {
+        void pickVariablesFlow(msg.query ?? "");
         return;
       }
       if (msg.kind === "var-add") {

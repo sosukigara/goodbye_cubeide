@@ -57,6 +57,21 @@ export function ancestorsOf(path: string): string[] {
 }
 
 /**
+ * Compiler, C++ mangled and libc internals never belong in a human-facing
+ * variable list (`_ZN...`, `__sf`, `..._M_elems...`). Explicitly added names
+ * bypass this; only the auto-generated catalog rows are filtered.
+ */
+export function isNoiseVariable(name: string): boolean {
+  if (name === "") {
+    return true;
+  }
+  if (name.charAt(0) === "_") {
+    return true;
+  }
+  return name.indexOf("._M_") >= 0;
+}
+
+/**
  * True when `name` is `prefix` itself or hierarchically below it. An empty
  * prefix matches everything: several call sites treat "" as the root.
  * The `[` arm is the array-group fix; without it a group never matches its
@@ -200,6 +215,12 @@ export const NAME_PATH_JS: string = [
   "    }",
   "  }",
   "  return out;",
+  "}",
+  "function npIsNoise(name) {",
+  "  var s = String(name === undefined || name === null ? '' : name);",
+  "  if (s === '') return true;",
+  "  if (s.charAt(0) === '_') return true;",
+  "  return s.indexOf('._M_') >= 0;",
   "}",
   "function npIsUnder(name, prefix) {",
   "  var n = String(name);",

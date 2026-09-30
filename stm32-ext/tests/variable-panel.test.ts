@@ -121,7 +121,7 @@ function boot(watched: readonly string[] = [], stripTestid?: string): Panel {
   }
   for (const id of [
     "var-picker", "var-add", "var-remove", "var-search", "var-error",
-    "var-note", "var-table", "var-rows", "var-status", "var-names",
+    "var-note", "var-table", "var-rows", "var-status",
     "var-csv-schema",
   ]) {
     if (!byId.has(id)) {
@@ -249,8 +249,24 @@ describe("variable panel surface", () => {
     });
     expect(parseVariablePanelMessage({ kind: "var-add", name: "" })).toBeNull();
     expect(parseVariablePanelMessage({ kind: "var-write", name: "sys.loop_hz", value: "" })).toBeNull();
+    expect(parseVariablePanelMessage({ kind: "var-pick", query: "sys." })).toEqual({
+      kind: "var-pick",
+      name: "",
+      value: "",
+      query: "sys.",
+    });
+    expect(parseVariablePanelMessage({ kind: "var-pick", query: 7 })).toBeNull();
     expect(parseVariablePanelMessage({ kind: "nope" })).toBeNull();
     expect(parseVariablePanelMessage(null)).toBeNull();
+  });
+
+  it("the 追加 button asks the host QuickPick instead of completing inline", () => {
+    const p = boot();
+    p.post(types({ "sys.loop_hz": LEAF() }));
+    p.post({ kind: "live-watchlist", names: [] });
+    p.el("var-picker").value = "sys.";
+    p.el("var-add").fire("click");
+    expect(p.posted).toEqual([{ kind: "var-pick", query: "sys." }]);
   });
 });
 
