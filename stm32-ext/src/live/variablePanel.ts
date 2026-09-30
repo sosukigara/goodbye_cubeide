@@ -250,13 +250,27 @@ const VAR_SCRIPT = `var __SEED = __VAR_SEED__;`
   + ` }`
   + ` return out;`
   + `}`
+  + `let rebuildGen = 0;`
   + `function rebuild() {`
+  + ` rebuildGen += 1;`
+  + ` const gen = rebuildGen;`
   + ` if (!tbody) return;`
   + ` tbody.textContent = '';`
   + ` for (let i = 0; i < V.order.length; i += 1) tbody.appendChild(mkRow(V.order[i]));`
+  + ` paintAll();`
   + ` const leafKeys = Array.from(V.types.keys()).filter((k) => !isNoise(k));`
-  + ` const all = npCandidates(leafKeys);`
-  + ` for (let i = 0; i < all.length; i += 1) { if (!V.watched[all[i]]) tbody.appendChild(mkRow(all[i])); }`
+  + ` const rest = npCandidates(leafKeys).filter((n) => !V.watched[n]);`
+  + ` appendRowsChunked(rest, 0, gen);`
+  + `}`
+  + `function appendRowsChunked(list, i, gen) {`
+  + ` if (gen !== rebuildGen || !tbody) return;`
+  + ` const end = Math.min(list.length, i + 200);`
+  + ` for (let k = i; k < end; k += 1) tbody.appendChild(mkRow(list[k]));`
+  + ` if (end < list.length) {`
+  + `  if (typeof setTimeout !== 'function') { appendRowsChunked(list, end, gen); return; }`
+  + `  setTimeout(() => appendRowsChunked(list, end, gen), 0);`
+  + `  return;`
+  + ` }`
   + ` paintAll();`
   + `}`
   + `function mkRow(name) {`
