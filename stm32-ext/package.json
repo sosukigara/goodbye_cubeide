@@ -61,6 +61,7 @@
     "test:py": "python3 -c \"import pytest\" >/dev/null 2>&1 || { echo \"SKIP: pytest not installed (pip install pytest)\"; exit 0; }; python3 -m pytest tests/ -q",
     "verify": "npm run typecheck && npm run test && npm run test:py && npm run compile",
     "package": "npm run compile && vsce package --no-yarn",
+    "install:local": "npm run package && code --install-extension stm32-ext-*.vsix",
     "gen:ninja": "node out/build/cli.js",
     "parity": "python3 scripts/parity-check.py"
   },
