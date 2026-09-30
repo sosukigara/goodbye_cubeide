@@ -144,6 +144,10 @@ function comparePath(a: string, b: string): number {
  */
 export function completionCandidates(paths: Iterable<string>): string[] {
   const all = new Set<string>();
+  // Every strict ancestor of an input path is a group by construction (the
+  // path itself is its descendant), so no pairwise scan is needed: the old
+  // O(n^2) loop over the full list dominated live-types handling at scale.
+  const groupOf = new Set<string>();
   for (const p of paths) {
     if (p === "") {
       continue;
@@ -151,18 +155,10 @@ export function completionCandidates(paths: Iterable<string>): string[] {
     all.add(p);
     for (const a of ancestorsOf(p)) {
       all.add(a);
+      groupOf.add(a);
     }
   }
   const list = [...all];
-  const groupOf = new Set<string>();
-  for (const g of list) {
-    for (const c of list) {
-      if (c !== g && isUnder(c, g)) {
-        groupOf.add(g);
-        break;
-      }
-    }
-  }
   list.sort((x, y) => {
     const gx = groupOf.has(x) ? 0 : 1;
     const gy = groupOf.has(y) ? 0 : 1;
@@ -260,20 +256,15 @@ export const NAME_PATH_JS: string = [
   "function npCandidates(paths) {",
   "  var all = Object.create(null);",
   "  var order = [];",
+  "  var groups = Object.create(null);",
   "  var add = function (p) { if (p !== '' && !all[p]) { all[p] = true; order.push(p); } };",
   "  for (var i = 0; i < paths.length; i += 1) {",
   "    var p = String(paths[i]);",
   "    add(p);",
   "    var ancs = npAncestorsOf(p);",
-  "    for (var k = 0; k < ancs.length; k += 1) add(ancs[k]);",
+  "    for (var k = 0; k < ancs.length; k += 1) { add(ancs[k]); groups[ancs[k]] = true; }",
   "  }",
-  "  var isGroup = function (g) {",
-  "    for (var j = 0; j < order.length; j += 1) {",
-  "      var c = order[j];",
-  "      if (c !== g && npIsUnder(c, g)) return true;",
-  "    }",
-  "    return false;",
-  "  };",
+  "  var isGroup = function (g) { return !!groups[g]; };",
   "  order.sort(function (x, y) {",
   "    var gx = isGroup(x) ? 0 : 1;",
   "    var gy = isGroup(y) ? 0 : 1;",
