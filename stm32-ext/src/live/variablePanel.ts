@@ -6,8 +6,10 @@
 // Host -> webview messages consumed (same shapes as the sidebar uses):
 //   live-sample       { samples: LiveSample[] }                  value updates
 //   live-types        { tree, index: Record<string, LeafMeta> }   type decoding
-//   live-watchlist    { names: string[] }                         authoritative set
+//   live-watchlist    { names: string[] }                         watched subset (ordered first)
+//   live-watchlist-note { summary }                               status note (never touches values)
 //   live-write-result { name, ok, message }                       per-row write feedback
+//   live-drop is the CSV ingest loss rate and is deliberately ignored here.
 // webview -> host messages produced (see parseVariablePanelMessage):
 //   var-add / var-remove   { name }              one message per leaf
 //   var-write              { name, value }       Enter in a row's write input
@@ -51,6 +53,8 @@ const VAR_CSS = `<style>`
   + `td.o{white-space:nowrap;text-align:right}`
   + `td.o button{padding:0 7px;line-height:1.4}`
   + `tr[data-hidden="1"]{display:none}`
+  + `tr[data-watched="0"]{opacity:.6}`
+  + `tr[data-watched="0"] td.n{font-style:italic}`
   + `.msg{min-height:1.2em;margin:2px 0;font-size:.9em}`
   + `.err{color:var(--vscode-testing-iconFailed,#f14c4c)}`
   + `.note{opacity:.75}`
@@ -134,8 +138,11 @@ const VAR_SCRIPT = `var __SEED = __VAR_SEED__;`
   + `function fail(msg) { if (errBox) { errBox.textContent = msg; errBox.className = 'err'; } }`
   + `function note(msg) { if (noteBox) { noteBox.textContent = msg; noteBox.className = 'note'; } }`
   + `function clearErr() { if (errBox) { errBox.textContent = ''; errBox.className = 'err'; } }`
-  // Membership is the host's call: live-watchlist is authoritative, so the
-  // table converges to exactly what the host polls — including empty.
+  // Membership is the UNION of the host watchlist and every leaf in the
+  // live-types index: watched names first in watchlist order, then the
+  // remaining type keys sorted. Nothing is excluded — unwatched rows are
+  // still selectable/searchable, styled via data-watched="0", and show `-`
+  // until a sample arrives (they are not polled until watched).
   // watched/keep are null-prototype maps, not {}: a C symbol called
   // `constructor` or `toString` would otherwise hit Object.prototype, look
   // already registered, and never get a row (same class the graph panel
@@ -164,7 +171,7 @@ const VAR_SCRIPT = `var __SEED = __VAR_SEED__;`
   + `  V.types = next;`
   + ` }`
   + ` fillNames();`
-  + ` paintAll();`
+  + ` rebuild();`
   + `}`
   + `function onSamples(arr) {`
   + ` for (let i = 0; i < arr.length; i += 1) {`
@@ -190,11 +197,14 @@ const VAR_SCRIPT = `var __SEED = __VAR_SEED__;`
   + ` if (!tbody) return;`
   + ` tbody.textContent = '';`
   + ` for (let i = 0; i < V.order.length; i += 1) tbody.appendChild(mkRow(V.order[i]));`
+  + ` const rest = Array.from(V.types.keys()).filter((n) => !V.watched[n]).sort();`
+  + ` for (let i = 0; i < rest.length; i += 1) tbody.appendChild(mkRow(rest[i]));`
   + ` paintAll();`
   + `}`
   + `function mkRow(name) {`
   + ` const tr = mk('tr');`
   + ` tr.setAttribute('data-name', name);`
+  + ` tr.setAttribute('data-watched', V.watched[name] ? '1' : '0');`
   + ` const n = mk('td'); n.className = 'n'; n.textContent = name; n.title = name;`
   + ` const v = mk('td'); v.className = 'v'; v.textContent = '-';`
   + ` const w = mk('td'); w.className = 'w';`
@@ -292,6 +302,7 @@ const VAR_SCRIPT = `var __SEED = __VAR_SEED__;`
   + ` if (k === 'live-sample' && Array.isArray(m.samples)) onSamples(m.samples);`
   + ` else if (k === 'live-types') onTypes(m);`
   + ` else if (k === 'live-watchlist') onWatchlist(m);`
+  + ` else if (k === 'live-watchlist-note') note((m && typeof m.summary === 'string' && m.summary !== '') ? m.summary : ((m && typeof m.message === 'string') ? m.message : ''));`
   + ` else if (k === 'live-write-result') onWriteResult(m);`
   + `});`
   + `const addBtn = q('[data-testid="var-add"]');`

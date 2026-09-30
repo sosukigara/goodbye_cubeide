@@ -338,10 +338,59 @@ describe("variable panel live values", () => {
     p.post({ kind: "live-sample", samples: [sample("sys.loop_hz", "0x00000ea8", 10)] });
     expect(p.valueOf("sys.loop_hz")).toBe("3752");
     // The surviving 削除 button is wired: clicking it posts var-remove.
+    // The row stays visible as an unwatched type leaf (union membership):
+    // var-remove only leaves the watchlist, it never deletes the row.
     p.el("var-picker").value = "sys.loop_hz";
     p.el("var-remove").fire("click");
     expect(p.posted).toEqual([{ kind: "var-remove", name: "sys.loop_hz" }]);
-    expect(p.rowNames()).toEqual([]);
+    expect(p.rowNames()).toEqual(["sys.loop_hz"]);
+    expect(watchedOf(p, "sys.loop_hz")).toBe("0");
+  });
+
+  it("lists every live-types leaf even with no live-watchlist at all", () => {
+    const p = boot();
+    p.post(types({ "sys.c": LEAF(), "sys.a": LEAF(), "sys.b": LEAF() }));
+    expect(p.rowNames()).toEqual(["sys.a", "sys.b", "sys.c"]);
+    expect(p.valueOf("sys.a")).toBe("-");
+    expect(p.valueOf("sys.b")).toBe("-");
+    expect(p.valueOf("sys.c")).toBe("-");
+    expect(watchedOf(p, "sys.a")).toBe("0");
+  });
+
+  it("orders watched names first, marks them, and keeps unwatched rows searchable", () => {
+    const p = boot();
+    p.post(types({ "sys.c": LEAF(), "sys.a": LEAF(), "sys.b": LEAF() }));
+    p.post({ kind: "live-watchlist", names: ["sys.c"] });
+    expect(p.rowNames()).toEqual(["sys.c", "sys.a", "sys.b"]);
+    expect(watchedOf(p, "sys.c")).toBe("1");
+    expect(watchedOf(p, "sys.a")).toBe("0");
+    expect(watchedOf(p, "sys.b")).toBe("0");
+    // Search filters but never deletes: the unwatched rows are still there.
+    p.el("var-search").value = "sys.a";
+    p.el("var-search").fire("input");
+    expect(p.rowNames()).toEqual(["sys.c", "sys.a", "sys.b"]);
+    expect(hiddenOf(p, "sys.a")).toBe("0");
+    expect(hiddenOf(p, "sys.c")).toBe("1");
+  });
+
+  it("a live-drop message never changes the watchlist row set", () => {
+    const p = boot();
+    p.post(types({ "sys.c": LEAF(), "sys.a": LEAF(), "sys.b": LEAF() }));
+    p.post({ kind: "live-watchlist", names: ["sys.c"] });
+    const before = p.rowNames();
+    p.post({ kind: "live-drop", summary: "sys.c を除外しました" });
+    expect(p.rowNames()).toEqual(before);
+    expect(p.valueOf("sys.c")).toBe("-");
+  });
+
+  it("a live-watchlist-note surfaces as a status note without touching rows", () => {
+    const p = boot();
+    p.post(types({ "sys.c": LEAF(), "sys.a": LEAF(), "sys.b": LEAF() }));
+    p.post({ kind: "live-watchlist", names: ["sys.c"] });
+    const before = p.rowNames();
+    p.post({ kind: "live-watchlist-note", summary: "sys.c を除外しました (1 件)" });
+    expect(p.rowNames()).toEqual(before);
+    expect(p.el("var-note").textContent).toContain("を除外しました");
   });
 });
 
@@ -351,6 +400,14 @@ function rowTr(p: Panel, name: string): StubEl {
     throw new Error(`missing row for ${name}`);
   }
   return tr;
+}
+
+function watchedOf(p: Panel, name: string): string | null {
+  return rowTr(p, name).getAttribute("data-watched");
+}
+
+function hiddenOf(p: Panel, name: string): string | null {
+  return rowTr(p, name).getAttribute("data-hidden");
 }
 
 function writeInputOf(p: Panel, name: string): StubEl {

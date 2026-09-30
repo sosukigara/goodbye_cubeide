@@ -542,6 +542,7 @@ export class LivePanelProvider {
     // harmless.
     if (typeof msg === "object" && msg !== null
       && ((msg as Record<string, unknown>)["kind"] === "live-watchlist"
+        || (msg as Record<string, unknown>)["kind"] === "live-watchlist-note"
         || (msg as Record<string, unknown>)["kind"] === "live-write-result")) {
       this.postToTypeTargets(msg);
     }
@@ -1260,12 +1261,14 @@ export class LivePanelProvider {
     if (drop.length === 0) {
       return;
     }
-    const kept = this.watchNames().filter((n) =>
+    const before = this.watchNames();
+    const kept = before.filter((n) =>
       !drop.some((d) => n === d || n.startsWith(`${d}.`)));
     await this.storage?.update(WATCHLIST_KEY, kept);
     this.slog(`watchlist: -${drop.join(",")} (${kept.length} left)`);
     this.post({ kind: "live-watchlist", names: kept });
-    this.drop(`${drop.join(", ")} を除外しました`);
+    const removed = before.length - kept.length;
+    this.post({ kind: "live-watchlist-note", summary: `${drop.join(", ")} を除外しました (${removed} 件)` });
     await this.restart();
   }
   /** Remove a variable from the watchlist, then restart the session. */
