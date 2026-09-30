@@ -1,0 +1,41 @@
+{
+  "elf": "mock.elf",
+  "base": "0x20000000",
+  "size": 64,
+  "has_debug_info": true,
+  "backend": "pyelftools",
+  "symbols": [
+    {
+      "name": "sys.u32",
+      "address": "0x20000000",
+      "offset": 0,
+      "size": 4,
+      "type": "uint32_t",
+      "kind": "scalar",
+      "signed": false
+    },
+    {
+      "name": "sys.flag",
+      "address": "0x20000004",
+      "offset": 4,
+      "size": 1,
+      "type": "bool",
+      "kind": "bool",
+      "signed": false
+    },
+    {
+      "name": "motor.speed",
+      "address": "0x20000008",
+      "offset": 8,
+      "size": 4,
+      "type": "int32_t",
+      "kind": "scalar",
+      "signed": true
+    }
+  ],
+  "index": {
+    "sys.u32": {"size": 4, "kind": "scalar", "signed": false, "type": "uint32_t"},
+    "sys.flag": {"size": 1, "kind": "bool", "signed": false, "type": "bool"},
+    "motor.speed": {"size": 4, "kind": "scalar", "signed": true, "type": "int32_t"}
+  }
+}
