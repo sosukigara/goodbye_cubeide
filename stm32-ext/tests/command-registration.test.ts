@@ -61,6 +61,15 @@ describe("the graph panel is actually mounted", () => {
     const sidebar = readFileSync(join(root, "src/panels/sidebar.ts"), "utf8");
     expect(sidebar).toContain("command:stm32ext.showGraph");
   });
+
+  it("opening the build command mounts the editor-area build tab", () => {
+    const at = extensionSource.indexOf('registerCommand("stm32ext.showBuild"');
+    expect(at).toBeGreaterThan(-1);
+    expect(extensionSource.slice(at, at + 200)).toContain("openBuildPanel");
+    expect(extensionSource).toContain("mountBuildPanel(");
+    const sidebar = readFileSync(join(root, "src/panels/sidebar.ts"), "utf8");
+    expect(sidebar).toContain("command:stm32ext.showBuild");
+  });
 });
 
 describe("the panel inventory stays at six", () => {

@@ -191,7 +191,12 @@ export function renderSidebar(
   return `<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8">`
     + `<meta name="viewport" content="width=device-width, initial-scale=1.0">`
     + `<title>STM32</title><style>:root{--stm32ext-ui-font:${fontPx}px}</style>${SIDEBAR_CSS}</head>`
-    + `<body>${sections}`
+    + `<body><nav class="launch" aria-label="パネル">`
+    + `<a class="btn primary" data-testid="launch-build" role="button" href="command:stm32ext.showBuild">ビルドタブ</a>`
+    + `<a class="btn" data-testid="launch-variables" role="button" href="command:stm32ext.showVariables">変数タブ</a>`
+    + `<a class="btn" data-testid="launch-graph" role="button" href="command:stm32ext.showGraph">グラフタブ</a>`
+    + `<a class="btn" data-testid="launch-flash" role="button" href="command:stm32ext.flash">書込</a>`
+    + `</nav>${sections}`
     + `<script>${SIDEBAR_SCRIPT}</script>`
     + `</body></html>`;
 }
@@ -206,6 +211,8 @@ export const SIDEBAR_CSS = `<style>`
   // same failure this sizing work was meant to end, reappearing at the
   // default. One source, so the columns can never disagree with the text.
   + `body{font-family:var(--vscode-font-family,sans-serif);font-size:var(--stm32ext-ui-font,15px);color:var(--vscode-foreground,#ccc);margin:0;padding:0 8px 24px;line-height:1.5}`
+  + `.launch{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding:10px 0 4px}`
+  + `.launch a.btn{margin:0;text-align:center;padding:6px 4px;border-radius:4px;border:1px solid var(--vscode-panel-border,rgba(128,128,128,.3));font-weight:600;letter-spacing:.04em}`
   + `section{border-top:1px solid var(--vscode-panel-border,rgba(128,128,128,.3));padding:8px 0 10px}`
   + `section:first-child{border-top:none}`
   + `h2{font-size:.92em;font-weight:600;margin:0 0 6px;letter-spacing:.02em;display:flex;align-items:center;gap:6px}`
