@@ -83,7 +83,6 @@ const VAR_SCRIPT = `var __SEED = __VAR_SEED__;`
   + `const errBox = q('[data-testid="var-error"]');`
   + `const noteBox = q('[data-testid="var-note"]');`
   + `const statusBox = q('[data-testid="var-status"]');`
-  + `const namesBox = q('[data-testid="var-names"]');`
   + `const picker = q('[data-testid="var-picker"]');`
   + `const search = q('[data-testid="var-search"]');`
   + `const kindOf = (meta) => (meta && typeof meta.kind === 'string' && meta.kind !== '' ? meta.kind : 'scalar');`
@@ -181,7 +180,6 @@ const VAR_SCRIPT = `var __SEED = __VAR_SEED__;`
   + `  for (let i = 0; i < keys.length; i += 1) next.set(keys[i], idx[keys[i]]);`
   + `  V.types = next;`
   + ` }`
-  + ` fillNames();`
   + ` rebuild();`
   + `}`
   + `let paintQueued = false;`
@@ -196,31 +194,8 @@ const VAR_SCRIPT = `var __SEED = __VAR_SEED__;`
   + ` if (typeof setTimeout !== 'function') { paintQueued = false; paintAll(); return; }`
   + ` setTimeout(() => { paintQueued = false; paintAll(); }, 100);`
   + `}`
-  // Datallist depth sized off measured reality: the resolver reports ~355
-  // leaves for unit_omni3 before arrays (more after), so 5000 options leave
-  // headroom for 10x growth instead of silently hiding later members.
-  // Groups sort first (npCandidates): when the list is truncated, the names
-  // that survive are the ones carrying a whole subtree. Trailing segments
-  // ride along as extra options because <datalist> matches from the start of
-  // the value — a user typing `drive_` only ever matches `drive_...`
-  // segments, never the full `measure.drive_...` path. addName maps a bare
-  // segment back to its full paths, so both shapes are addable. A struct or
-  // array group is therefore pickable here exactly like a leaf; before this
-  // the list held leaves only, so a group could never be picked at all.
-  + `const MAX_OPTIONS = 5000;`
-  + `function fillNames() {`
-  + ` if (!namesBox) return;`
-  + ` namesBox.textContent = '';`
-  + ` const keys = Array.from(V.types.keys()).filter((k) => !isNoise(k));`
-  + ` const cands = npCandidates(keys);`
-  + ` const seen = Object.create(null);`
-  + ` const out = [];`
-  + ` const push = (v) => { if (v !== '' && !seen[v]) { seen[v] = true; out.push(v); } };`
-  + ` for (let i = 0; i < cands.length; i += 1) push(cands[i]);`
-  + ` for (let i = 0; i < cands.length; i += 1) push(npLastSegment(cands[i]));`
-  + ` const n = Math.min(out.length, MAX_OPTIONS);`
-  + ` for (let i = 0; i < n; i += 1) { const o = mk('option'); o.setAttribute('value', out[i]); namesBox.appendChild(o); }`
-  + `}`
+  // The picker is a plain input: completion is the host QuickPick
+  // (var-pick), because the in-page datalist rendered at odd offsets.
   // A trailing segment typed in the picker back to the full paths it names.
   // Exact full paths never reach here: the caller checks those first.
   + `function resolveVarInput(raw) {`
@@ -242,11 +217,7 @@ const VAR_SCRIPT = `var __SEED = __VAR_SEED__;`
   + ` return null;`
   + `}`
   + `function isNoise(n) {`
-  + ` const s = String(n === undefined || n === null ? '' : n);`
-  + ` if (s === '') return true;`
-  + ` if (s.charAt(0) === '_') return true;`
-  + ` if (s.indexOf('._M_') >= 0) return true;`
-  + ` return false;`
+  + ` return npIsNoise(n);`
   + `}`
   + `function childLeaves(name) {`
   + ` const out = [];`
@@ -385,6 +356,10 @@ const VAR_SCRIPT = `var __SEED = __VAR_SEED__;`
   + ` }`
   + ` if (statusBox) statusBox.textContent = '監視 ' + V.order.length + ' 件';`
   + `}`
+  + `function pickVars() {`
+  + ` const query = picker ? String(picker.value === undefined || picker.value === null ? '' : picker.value) : '';`
+  + ` vscode.postMessage({ kind: 'var-pick', query: query.trim() });`
+  + `}`
   + `function addName(raw) {`
   + ` const name = String(raw === undefined || raw === null ? '' : raw).trim();`
   + ` if (name === '') { fail('変数名が空です'); return; }`
@@ -443,10 +418,10 @@ const VAR_SCRIPT = `var __SEED = __VAR_SEED__;`
   + ` else if (k === 'live-write-result') onWriteResult(m);`
   + `});`
   + `const addBtn = q('[data-testid="var-add"]');`
-  + `if (addBtn) addBtn.addEventListener('click', () => addName(picker ? picker.value : ''));`
+  + `if (addBtn) addBtn.addEventListener('click', () => pickVars());`
   + `const removeBtn = q('[data-testid="var-remove"]');`
   + `if (removeBtn) removeBtn.addEventListener('click', () => removeName(picker ? picker.value : ''));`
-  + `if (picker) picker.addEventListener('keydown', (e) => { if (e && e.key === 'Enter') addName(picker.value); });`
+  + `if (picker) picker.addEventListener('keydown', (e) => { if (e && e.key === 'Enter') pickVars(); });`
   + `if (search) search.addEventListener('input', () => { V.query = search.value || ''; paintAll(); });`
   + `if (Array.isArray(__SEED)) for (let i = 0; i < __SEED.length; i += 1) { const n = String(__SEED[i]); if (n !== '' && !V.watched[n]) { V.watched[n] = true; V.order.push(n); } }`
   + `rebuild();`;
@@ -466,8 +441,7 @@ export function variablePanelHtml(watched: readonly string[] = []): string {
     + `<body><h1>${VARIABLE_PANEL_TITLE} <span class="ver">v${EXT_VERSION}</span></h1>`
     + `<div class="bar" role="toolbar" aria-label="変数操作">`
     + `<div class="grp"><span class="lbl">変数</span>`
-    + `<input data-testid="var-picker" class="pick" type="text" list="var-names" placeholder="sys.loop_hz" aria-label="変数名">`
-    + `<datalist id="var-names" data-testid="var-names"></datalist>`
+    + `<input data-testid="var-picker" class="pick" type="text" placeholder="sys.loop_hz" aria-label="変数名">`
     + `<button data-testid="var-add" type="button" class="primary" title="入力した変数を監視に追加">追加</button>`
     + `<button data-testid="var-remove" type="button" title="入力した変数を監視から除外">削除</button></div>`
     + `<div class="grp"><span class="lbl">検索</span>`
@@ -484,13 +458,15 @@ export function variablePanelHtml(watched: readonly string[] = []): string {
     + `</body></html>`;
 }
 
-export type VariablePanelMessageKind = "var-add" | "var-remove" | "var-write";
+export type VariablePanelMessageKind = "var-add" | "var-remove" | "var-write" | "var-pick";
 
 export interface VariablePanelMessage {
   readonly kind: VariablePanelMessageKind;
   readonly name: string;
   /** Only set for var-write: the raw text from the row's write input. */
   readonly value: string;
+  /** Only set for var-pick: the picker's current text as the QuickPick seed. */
+  readonly query?: string;
 }
 
 export function parseVariablePanelMessage(raw: unknown): VariablePanelMessage | null {
@@ -510,6 +486,9 @@ export function parseVariablePanelMessage(raw: unknown): VariablePanelMessage | 
     && typeof r["value"] === "string" && r["value"] !== ""
   ) {
     return { kind: "var-write", name: r["name"], value: r["value"] };
+  }
+  if (r["kind"] === "var-pick" && typeof r["query"] === "string") {
+    return { kind: "var-pick", name: "", value: "", query: r["query"] };
   }
   return null;
 }
