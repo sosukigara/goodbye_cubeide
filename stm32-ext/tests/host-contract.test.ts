@@ -80,6 +80,8 @@ describe("the sidecar argv carries a width for every watch", () => {
   it("the sidecar's new exit codes are explained, not swallowed", () => {
     expect(exitCodeReason(6)).toContain("監視できる変数がありません");
     expect(exitCodeReason(5)).toContain("ST-LINK");
+    expect(exitCodeReason(3)).toContain("ST-LINK");
+    expect(exitCodeReason(4)).toContain("データ落ち");
     expect(exitCodeReason(0)).toBeUndefined();
     expect(extensionSource).toContain("exitCodeReason(code)");
   });
@@ -232,7 +234,7 @@ describe("P0-15 + D3: the type tree survives the host", () => {
   it("elf_resolve.py can be told to resolve every member (--all-members)", () => {
     // The resolution is useless for struct selection without the whole tree,
     // and the runner has to forward the flag instead of hardcoding argv.
-    expect(extensionSource).toMatch(/\["--all-members"\]/);
+    expect(extensionSource).toMatch(/\[\s*"--all-members"[^\]]*\]/);
     expect(extensionSource).toMatch(/extra: readonly string\[\]/);
   });
 

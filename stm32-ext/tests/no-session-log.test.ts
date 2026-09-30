@@ -9,7 +9,10 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("vscode", () => ({
   window: {
-    showWarningMessage: vi.fn(),
+    // checkProbeConflict reads the REAL /tmp/stm32ext-live.lock; a polling
+    // session on this machine would otherwise block every startSession here.
+    // "このまま続行" means "no conflict, proceed".
+    showWarningMessage: vi.fn(async () => "このまま続行"),
     showErrorMessage: vi.fn(),
     showInformationMessage: vi.fn(),
     showQuickPick: vi.fn(),
@@ -32,6 +35,8 @@ vi.mock("vscode", () => ({
 // Without this the test depends on whatever holds the ST-LINK on the machine.
 vi.mock("../src/probe/conflict", () => ({
   CUBEIDE_RUNNING_MESSAGE: "CubeIDE is running",
+  PROBE_BUSY_MESSAGE: "probe busy",
+  isProbeBusyOutput: () => false,
   detectConflicts: () => [],
   findOwnPollPids: () => [],
   listProcesses: () => "",
@@ -98,10 +103,92 @@ describe("nothing-pollable start attempts are reported once", () => {
     await start(live);
     expect(pairs(channel.lines).filter((l) => l.includes("watch leaves:"))).toHaveLength(2);
   });
+
+  it("an explicit reconnect with an empty watchlist names the cause and the way out", async () => {
+    const { live, channel } = liveWith([]);
+    await start(live);
+    const before = channel.lines.length;
+    await live.handleLiveAction("reconnect");
+    const fresh = channel.lines.slice(before).filter((l) => l.includes("nothing watched ("));
+    expect(fresh).toHaveLength(1);
+    expect(fresh[0]).toContain("変数追加");
+  });
+
+  it("eleven rapid reconnects log that line only once", async () => {
+    const { live, channel } = liveWith([]);
+    await start(live);
+    for (let i = 0; i < 11; i += 1) {
+      await live.handleLiveAction("reconnect");
+    }
+    expect(channel.lines.filter((l) => l.includes("nothing watched ("))).toHaveLength(1);
+  });
+
+  it("a reconnect logs again once the watchlist changes", async () => {
+    const { live, channel, store } = liveWith([]);
+    await start(live);
+    await live.handleLiveAction("reconnect");
+    store.set("stm32ext.liveWatch", ["not.in.the.elf"]);
+    await live.handleLiveAction("reconnect");
+    expect(channel.lines.filter((l) => l.includes("nothing watched ("))).toHaveLength(2);
+  });
+});
+
+describe("reload: the built elf+mcu survive in storage for re-resolution", () => {
+  it("persists the built elf+mcu so a reload can re-resolve", () => {
+    const { store } = liveWith([]);
+    expect(store.get("stm32ext.liveElf")).toEqual({ elfPath: RESOLUTION.elf, mcu: "STM32F4" });
+  });
+
+  it("reads the persisted elf+mcu back, and nothing when never built", async () => {
+    const { readPersistedLiveElf } = await import("../src/extension.js");
+    const { store } = liveWith([]);
+    const storage = { get: (k: string): unknown => store.get(k) };
+    expect(readPersistedLiveElf(storage as never)).toEqual({ elfPath: RESOLUTION.elf, mcu: "STM32F4" });
+    expect(readPersistedLiveElf(undefined)).toBeUndefined();
+    expect(readPersistedLiveElf({ get: () => undefined } as never)).toBeUndefined();
+    expect(readPersistedLiveElf({ get: () => "garbage" } as never)).toBeUndefined();
+  });
+
+  it("restore does nothing when the elf is gone, and never rejects", async () => {
+    const { restoreLiveAfterReload } = await import("../src/extension.js");
+    const { live, channel, store } = liveWith([]);
+    const storage = {
+      get: (k: string): unknown => store.get(k),
+      update: (k: string, v: unknown): Promise<void> => {
+        store.set(k, v);
+        return Promise.resolve();
+      },
+    };
+    await expect(restoreLiveAfterReload(
+      channel as never, live, join(tmpdir(), "stm32ext-scripts"), storage as never,
+    )).resolves.toBeUndefined();
+    expect(channel.lines.filter((l) => l.includes("resolved") || l.includes("resolve failed"))).toHaveLength(0);
+  });
+
+  it("restore re-resolves when the elf is still on disk", async () => {
+    const { restoreLiveAfterReload } = await import("../src/extension.js");
+    const { writeFileSync } = await import("node:fs");
+    const { live, channel, store } = liveWith([]);
+    const garbage = join(mkdtempSync(join(tmpdir(), "stm32ext-reload-")), "fw.elf");
+    writeFileSync(garbage, "not an elf");
+    store.set("stm32ext.liveElf", { elfPath: garbage, mcu: "STM32F4" });
+    const storage = {
+      get: (k: string): unknown => store.get(k),
+      update: (k: string, v: unknown): Promise<void> => {
+        store.set(k, v);
+        return Promise.resolve();
+      },
+    };
+    await expect(restoreLiveAfterReload(
+      channel as never, live, join(tmpdir(), "stm32ext-scripts"), storage as never,
+    )).resolves.toBeUndefined();
+    expect(channel.lines.some((l) => l.includes("resolve failed"))).toBe(true);
+  });
 });
 
 // The CSV button posts "export-csv", but handleLiveAction only knew "csv", so
 // the action fell through to writeFlow("","") and every press tried to write an
+// empty address instead of exporting.
 // empty address instead of exporting.
 describe("live-export-csv reaches exportCsv", () => {
   it("exports instead of falling through to a write", async () => {

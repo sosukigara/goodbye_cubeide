@@ -734,7 +734,7 @@ describe("sidebar: the tree is actually readable (real resolver shape)", () => {
     // An array resolves to no scalar symbol, so the write input is stripped too.
     expect(arr?.children[2].textContent).toBe("");
     // The group leaf count covers only what can actually be watched.
-    expect(group?.children[1].textContent).toBe("1葉");
+    expect(group?.children[1].textContent).toBe("1件");
   });
 });
 
@@ -1055,7 +1055,7 @@ describe("sidebar: removal by prefix", () => {
     b.send({ kind: "live-watchlist", names: ["periph.leaf1"] });
     expect(b.$('[data-name="periph.leaf0"]')?.dataset.watched).toBe("0");
     expect(b.$('[data-name="periph.leaf1"]')?.dataset.watched).toBe("1");
-    expect(b.$('[data-name="periph"]')?.children[1].textContent).toBe("3葉");
+    expect(b.$('[data-name="periph"]')?.children[1].textContent).toBe("3件");
   });
 });
 
@@ -1105,6 +1105,26 @@ describe("sidebar: states and affordances", () => {
     expect(b.$('[data-testid="live-detail"]')?.textContent).toBe("");
   });
 
+  it("an empty watchlist routes 監視開始 into the variable-add flow", () => {
+    const b = boot();
+    b.send({ kind: "live-bootstrap", project: "/fw/a", hz: 100, state: { ...SIDEBAR_PANEL_DEFAULT_STATE, selectedDir: "/fw/a" } });
+    const start = b.$('[data-testid="live-start"]');
+    expect(start?.disabled).toBe(false);
+    start?.dispatchEvent({ type: "click", target: start });
+    expect(b.posted.at(-1)).toEqual({ kind: "live-add-watch" });
+    b.send({ kind: "live-watchlist", names: ["sys.loop_hz"] });
+    b.$('[data-testid="live-start"]')?.dispatchEvent({ type: "click", target: b.$('[data-testid="live-start"]') });
+    expect(b.posted.at(-1)).toEqual({ kind: "live-start" });
+  });
+
+  it("監視開始 with no project still refuses instead of opening anything", () => {
+    const b = boot();
+    const start = b.$('[data-testid="live-start"]');
+    expect(start?.disabled).toBe(true);
+    start?.dispatchEvent({ type: "click", target: start });
+    expect(b.posted).toHaveLength(0);
+  });
+
   it("disables the eight live buttons and states why", () => {
     const b = boot();
     const why = (): string => b.$('[data-testid="live-why"]')?.textContent ?? "";
@@ -1113,10 +1133,10 @@ describe("sidebar: states and affordances", () => {
     expect(b.$('[data-testid="live-export-csv"]')?.disabled).toBe(true);
     expect(b.$('[data-testid="live-stop"]')?.title).toBe("監視していません");
     b.send({ kind: "live-bootstrap", project: "/fw/a", hz: 100, state: { ...SIDEBAR_PANEL_DEFAULT_STATE, selectedDir: "/fw/a" } });
-    // A project alone is not enough: an empty watchlist can never poll, so the
-    // button stays disabled instead of logging the same refusal forever.
-    expect(b.$('[data-testid="live-start"]')?.disabled).toBe(true);
-    expect(why()).toContain("監視する変数がありません");
+    // An empty watchlist no longer disables the button: pressing it opens the
+    // variable-add flow, so the hint names what the press will do.
+    expect(b.$('[data-testid="live-start"]')?.disabled).toBe(false);
+    expect(why()).toContain("監視開始で「変数追加」が開きます");
     b.send({ kind: "live-watchlist", names: ["sys.loop_hz"] });
     expect(b.$('[data-testid="live-start"]')?.disabled).toBe(false);
     expect(why()).not.toContain("プロジェクト未選択");
@@ -1367,6 +1387,142 @@ describe("sidebar: graph section is a launcher plus a series list, not a second 
     input!.blur();
     b.send({ kind: "live-bootstrap", project: "/fw/a", hz: 100, state: { ...SIDEBAR_PANEL_DEFAULT_STATE, graphSeries: ["sys.loop_hz"] } });
     expect(b.$('[data-testid="graph-input"]')?.getAttribute("value")).toBe("sys.loop_hz");
+  });
+});
+
+describe("sidebar: live-catalog browse and search", () => {
+  const CATALOG = [
+    {
+      name: "_ZN2tr10hardwares4stm324i2c16bridge6handleE",
+      path: "i2c1.handle",
+      address: "0x20000000",
+      size: 4,
+      type: "uint32_t",
+      kind: "scalar",
+      display: "tr::hardwares::stm32::i2c1::bridge::handle",
+    },
+    {
+      name: "cfg",
+      path: "cfg",
+      address: "0x20000100",
+      size: 8,
+      type: "Cfg",
+      kind: "struct",
+      display: "tr::cfg",
+      children: [
+        {
+          name: "rate",
+          path: "cfg.rate",
+          address: "0x20000100",
+          size: 4,
+          type: "uint32_t",
+          kind: "scalar",
+          display: "tr::cfg::rate",
+        },
+        {
+          name: "mode",
+          path: "cfg.mode",
+          address: "0x20000104",
+          size: 1,
+          type: "uint8_t",
+          kind: "scalar",
+          display: "tr::cfg::mode",
+        },
+      ],
+    },
+  ];
+  const withCatalog = (b: Booted): Booted => {
+    b.send({ kind: "live-catalog", roots: CATALOG });
+    return b;
+  };
+  const search = (b: Booted, q: string): void => {
+    const inp = b.$('[data-testid="live-search"]') as StubEl;
+    inp.value = q;
+    inp.dispatchEvent({ type: "input", target: inp });
+  };
+
+  it("renders a scalar root as a leafRow and a struct root as an expandable groupRow", () => {
+    const b = withCatalog(boot());
+    const scalar = b.$('tr[data-name="i2c1.handle"]');
+    expect(scalar?.dataset.kind).toBe("leaf");
+    expect(scalar?.children[0].textContent).toBe("tr::hardwares::stm32::i2c1::bridge::handle");
+    const group = b.$('tr[data-name="cfg"]');
+    expect(group?.dataset.kind).toBe("group");
+    expect(group?.children[0].textContent).toBe("tr::cfg");
+    expect(b.$('tr[data-name="cfg.rate"]')).not.toBeNull();
+    expect(b.$('tr[data-name="cfg.mode"]')).not.toBeNull();
+    // No row may be keyed by the display string.
+    expect(b.$('tr[data-name="tr::cfg"]')).toBeNull();
+    expect(b.$('tr[data-name="tr::cfg::rate"]')).toBeNull();
+  });
+
+  it("a catalog leaf shows values via paintLeaf like a tree leaf", () => {
+    const b = withCatalog(boot());
+    b.send({ kind: "live-sample", samples: [sample("cfg.rate", "0x00000064")] });
+    expect(b.$('tr[data-name="cfg.rate"]')?.children[1].textContent).toBe("100");
+  });
+
+  it("the + button and the 書込 input post the machine path, never the display name", () => {
+    const b = withCatalog(boot());
+    const add = b.$('tr[data-name="cfg.rate"] [data-op="add"]');
+    add?.dispatchEvent({ type: "click", target: add });
+    expect(b.posted.at(-1)).toEqual({ kind: "live-add", names: ["cfg.rate"] });
+    const inp = b.$('tr[data-name="cfg.rate"] [data-write]') as StubEl;
+    inp.value = "7";
+    inp.dispatchEvent({ type: "keydown", key: "Enter", target: inp });
+    expect(b.posted.at(-1)).toEqual({ kind: "live-write", name: "cfg.rate", value: "7" });
+    for (const m of b.posted) {
+      expect(JSON.stringify(m)).not.toContain("tr::cfg::rate");
+    }
+  });
+
+  it("filters case-insensitively against display, path and type; empty query shows everything", () => {
+    const b = withCatalog(boot());
+    search(b, "TR::CFG::RATE");
+    expect(b.$('tr[data-name="cfg.rate"]')?.dataset.hidden).not.toBe("1");
+    expect(b.$('tr[data-name="cfg.mode"]')?.dataset.hidden).toBe("1");
+    search(b, "uint8_t");
+    expect(b.$('tr[data-name="cfg.mode"]')?.dataset.hidden).not.toBe("1");
+    expect(b.$('tr[data-name="cfg.rate"]')?.dataset.hidden).toBe("1");
+    search(b, "cfg.mode");
+    expect(b.$('tr[data-name="cfg.mode"]')?.dataset.hidden).not.toBe("1");
+    search(b, "");
+    expect(b.$('tr[data-name="cfg.rate"]')?.dataset.hidden).not.toBe("1");
+    expect(b.$('tr[data-name="cfg.mode"]')?.dataset.hidden).not.toBe("1");
+    expect(b.$('tr[data-name="cfg"]')?.dataset.hidden).not.toBe("1");
+    expect(b.$('tr[data-name="i2c1.handle"]')?.dataset.hidden).not.toBe("1");
+  });
+
+  it("a group with some matching descendant stays visible showing only the matches; a fully-missing group hides", () => {
+    const b = withCatalog(boot());
+    search(b, "rate");
+    // The group itself does not match "rate", but one descendant does.
+    expect(b.$('tr[data-name="cfg"]')?.dataset.hidden).not.toBe("1");
+    expect(b.$('tr[data-name="cfg.rate"]')?.dataset.hidden).not.toBe("1");
+    expect(b.$('tr[data-name="cfg.mode"]')?.dataset.hidden).toBe("1");
+    search(b, "zzz-no-such-variable");
+    expect(b.$('tr[data-name="cfg"]')?.dataset.hidden).toBe("1");
+    expect(b.$('tr[data-name="cfg.rate"]')?.dataset.hidden).toBe("1");
+    expect(b.$('tr[data-name="i2c1.handle"]')?.dataset.hidden).toBe("1");
+  });
+
+  it("filtering preserves the watched highlight and the current value text", () => {
+    const b = withCatalog(boot());
+    b.send({ kind: "live-sample", samples: [sample("cfg.rate", "0x00000064")] });
+    b.send({ kind: "live-watchlist", names: ["cfg.rate"] });
+    search(b, "rate");
+    expect(b.$('tr[data-name="cfg.rate"]')?.dataset.watched).toBe("1");
+    expect(b.$('tr[data-name="cfg.rate"]')?.children[1].textContent).toBe("100");
+    search(b, "");
+    expect(b.$('tr[data-name="cfg.rate"]')?.dataset.watched).toBe("1");
+    expect(b.$('tr[data-name="cfg.rate"]')?.children[1].textContent).toBe("100");
+  });
+
+  it("live-types still renders the debug tree after the catalog change", () => {
+    const b = withCatalog(boot());
+    withTree(b);
+    expect(b.$('tr[data-name="sys.loop_hz"]')).not.toBeNull();
+    expect(b.$('tr[data-name="drive"]')?.dataset.kind).toBe("group");
   });
 });
 

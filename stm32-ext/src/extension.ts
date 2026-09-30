@@ -55,6 +55,7 @@ import {
 import {
   PROBE_BUSY_MESSAGE,
   WATCHLIST_KEY,
+  LIVE_ELF_KEY,
   buildResolutionJson,
   DEFAULT_EXTRA_SIZE,
   EXIT_NO_SYMBOLS,
@@ -322,6 +323,72 @@ function flashSettingsFrom(s: Stm32Settings): FlashSettings {
 }
 
 /** Live panel: variable table + allowlisted writes + CSV export + real polling session. */
+export interface CatalogNode {
+  readonly name: string;
+  readonly path: string;
+  readonly address: string;
+  readonly size: number;
+  readonly type: string;
+  readonly kind: string;
+  readonly display: string;
+  readonly children?: readonly CatalogNode[];
+}
+
+function toCatalogNode(v: unknown, depth = 0): CatalogNode | undefined {
+  if (typeof v !== "object" || v === null || depth > 32) {
+    return undefined;
+  }
+  const o = v as Record<string, unknown>;
+  if (typeof o["name"] !== "string" || typeof o["path"] !== "string") {
+    return undefined;
+  }
+  const children: CatalogNode[] = [];
+  if (Array.isArray(o["children"])) {
+    for (const c of o["children"]) {
+      const node = toCatalogNode(c, depth + 1);
+      if (node !== undefined) {
+        children.push(node);
+      }
+    }
+  }
+  return {
+    name: o["name"],
+    path: o["path"],
+    address: typeof o["address"] === "string" ? o["address"] : "",
+    size: typeof o["size"] === "number" ? o["size"] : 0,
+    type: typeof o["type"] === "string" ? o["type"] : "?",
+    kind: typeof o["kind"] === "string" ? o["kind"] : "unknown",
+    display: typeof o["display"] === "string" ? o["display"] : o["name"],
+    ...(children.length === 0 ? {} : { children }),
+  };
+}
+
+// Roots of the resolver's --catalog output. Undefined when the resolver ran
+// without the flag (additive) or the output is not JSON: the sidebar keeps
+// the type tree it already had instead of showing an empty picker.
+export function parseCatalogRoots(stdout: string): CatalogNode[] | undefined {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(stdout) as unknown;
+  } catch {
+    return undefined;
+  }
+  if (typeof raw !== "object" || raw === null) {
+    return undefined;
+  }
+  const roots = (raw as Record<string, unknown>)["roots"];
+  if (!Array.isArray(roots)) {
+    return undefined;
+  }
+  const out: CatalogNode[] = [];
+  for (const r of roots) {
+    const node = toCatalogNode(r);
+    if (node !== undefined) {
+      out.push(node);
+    }
+  }
+  return out;
+}
 export class LivePanelProvider {
   /**
    * Where status/sample messages go. Normally the sidebar's webview (single
@@ -329,6 +396,7 @@ export class LivePanelProvider {
    */
   private postTarget?: vscode.Webview;
   private resolution?: ElfResolution;
+  private catalogRoots: CatalogNode[] | undefined = undefined;
   private mcu = "";
   private scriptsDir = "";
   private storage?: vscode.Memento;
@@ -389,6 +457,8 @@ export class LivePanelProvider {
   private lastUnresolved: string[] = [];
   /** Signature of the last "nothing pollable" report; '' when none pending. */
   private noSessionSig = "";
+  /** Signature of the last user-initiated empty-watchlist nudge. */
+  private noSessionUserSig = "";
   /** All live controls, reachable from the sidebar's 変数 section. */
   async handleLiveAction(action: string, name = "", value = ""): Promise<void> {
     if (action === "csv" || action === "export-csv") {
@@ -397,7 +467,7 @@ export class LivePanelProvider {
     }
     if (action === "reconnect") {
       this.slog("reconnect requested: restarting session");
-      await this.restart();
+      await this.restart("reconnect");
       return;
     }
     if (action === "stop") {
@@ -526,9 +596,11 @@ export class LivePanelProvider {
    * only control surface and the graph panel a second subscriber. Both are
    * built from messages, never from an HTML assignment.
    */
-  setResolution(res: ElfResolution, mcu: string): void {
+  setResolution(res: ElfResolution, mcu: string, roots?: CatalogNode[]): void {
     this.resolution = res;
+    this.catalogRoots = roots;
     this.mcu = mcu;
+    void this.storage?.update(LIVE_ELF_KEY, { elfPath: res.elf, mcu });
     const index: Record<string, LeafMeta> = {};
     this.leafMeta = new Map();
     for (const s of res.symbols) {
@@ -551,6 +623,9 @@ export class LivePanelProvider {
     const types = { kind: "live-types", tree: res.tree, index };
     this.post(types);
     this.postToTypeTargets(types);
+    if (this.catalogRoots !== undefined) {
+      this.post({ kind: "live-catalog", roots: this.catalogRoots });
+    }
     this.post({ kind: "live-watchlist", names: this.watchNames() });
     void this.startSession();
   }
@@ -608,7 +683,7 @@ export class LivePanelProvider {
   }
   /** Restart polling (used after a flash that paused the session). */
   async restartLive(): Promise<void> {
-    await this.restart();
+    await this.restart("start");
   }
   /** Session lock path (shared across VSCode windows on this machine). */
   private lockPath(): string {
@@ -758,7 +833,7 @@ export class LivePanelProvider {
     const stored = this.storage?.get<unknown>(WATCHLIST_KEY);
     return Array.isArray(stored) ? stored.filter((s): s is string => typeof s === "string") : [];
   }
-  private async startSession(): Promise<void> {
+  private async startSession(origin = ""): Promise<void> {
     await this.stop();
     // Intentional-stop flag consumed: a fresh session is running, so
     // subsequent abnormal exits must auto-restart again.
@@ -824,12 +899,17 @@ export class LivePanelProvider {
         this.slog(`watch leaves: ${filter.symbols.length} (of ${names.length} watched names)`);
         this.slog("session not started: nothing watched");
       }
+      if ((origin === "reconnect" || origin === "start") && sig !== this.noSessionUserSig) {
+        this.noSessionUserSig = sig;
+        this.slog(`nothing watched (${names.length} names) — add variables with 変数追加 first`);
+      }
       this.postStatus("idle", "監視する変数がありません — 「変数追加」から選ぶか、ビルドしてください",
         allUnresolved.length > 0 ? `未解決: ${allUnresolved.join(", ")}` : undefined);
       this.post({ kind: "live-unresolved", names: allUnresolved });
       return;
     }
     this.noSessionSig = "";
+    this.noSessionUserSig = "";
     this.slog(`watch leaves: ${filter.symbols.length} (of ${names.length} watched names)`);
     try {
       writeFileSync(this.resJsonPath, buildResolutionJson(res, filter.symbols));
@@ -1109,13 +1189,13 @@ export class LivePanelProvider {
     this.slog(summary);
     this.drop(summary);
   }
-  private async restart(): Promise<void> {
+  private async restart(origin = ""): Promise<void> {
     if (this.resolution === undefined) {
       this.slog("restart requested but no ELF resolution yet (build first)");
       this.postStatus("idle", "ELF 未解決 — 先にビルドしてください");
       return;
     }
-    await this.startSession();
+    await this.startSession(origin);
   }
   /**
    * Add watched names from the webview's struct tree. A name may be a struct
@@ -1271,6 +1351,9 @@ export class LivePanelProvider {
       }
       const types = { kind: "live-types", tree: this.resolution.tree, index };
       void target.postMessage(types);
+      if (this.catalogRoots !== undefined) {
+        void target.postMessage({ kind: "live-catalog", roots: this.catalogRoots });
+      }
       // Same reason as setResolution: a surface that was hidden or reloaded
       // has an empty type map, and a graph panel registered later than the
       // resolution is exactly that case.
@@ -2119,6 +2202,42 @@ function firstError(diagnostics: readonly GccDiagnostic[]): string {
   return `${where}:${first.line} ${first.message}`;
 }
 
+export interface PersistedLiveElf {
+  readonly elfPath: string;
+  readonly mcu: string;
+}
+
+export function readPersistedLiveElf(storage: vscode.Memento | undefined): PersistedLiveElf | undefined {
+  const raw = storage?.get<unknown>(LIVE_ELF_KEY);
+  if (typeof raw !== "object" || raw === null) {
+    return undefined;
+  }
+  const { elfPath, mcu } = raw as Record<string, unknown>;
+  if (typeof elfPath !== "string" || elfPath === "" || typeof mcu !== "string") {
+    return undefined;
+  }
+  return { elfPath, mcu };
+}
+
+// Resolution is in-memory only, so a window reload leaves replayTo with no
+// live-types until the next build. Re-resolve from the last built ELF when it
+// is still on disk; never throws, so activation can fire and forget it.
+export async function restoreLiveAfterReload(
+  channel: vscode.OutputChannel,
+  live: LivePanelProvider | undefined,
+  scriptsDir: string | undefined,
+  storage: vscode.Memento | undefined,
+): Promise<void> {
+  try {
+    const persisted = readPersistedLiveElf(storage);
+    if (persisted === undefined || !existsSync(persisted.elfPath)) {
+      return;
+    }
+    await reresolveLive(channel, live, scriptsDir, persisted.elfPath, persisted.mcu);
+  } catch {
+    /* restore is best-effort; reresolveLive already logs its own failures */
+  }
+}
 /** Per-build ELF re-resolution for the Live monitor (todo5a). */
 async function reresolveLive(
   channel: vscode.OutputChannel,
@@ -2134,14 +2253,27 @@ async function reresolveLive(
     // --all-members: the whole DWARF tree, so the sidebar can offer struct
     // selection and every leaf carries its real width and signedness. The
     // host then filters it down to the watchlist before the sidecar sees it.
+    // --catalog: the resolver's additive roots array for the variable picker.
+    // It is requested only from the python resolver: the nm/size fallback
+    // resolves single symbols on demand and has no DWARF structure to build a
+    // catalog from. When roots are absent the sidebar keeps the type tree, so
+    // nothing else changes.
+    let catalogStdout = "";
     const res = await resolveElf(
       elfPath,
       (elf: string, extra: readonly string[] = []) =>
-        spawnCli(sidecarPythonNow(), [join(scriptsDir, "elf_resolve.py"), elf, ...extra, "--json"]),
-      ["--all-members"],
+        spawnCli(sidecarPythonNow(), [join(scriptsDir, "elf_resolve.py"), elf, ...extra, "--json"]).then((out) => {
+          catalogStdout = out.stdout;
+          return out;
+        }),
+      ["--all-members", "--catalog"],
     );
-    live.setResolution(res, mcu);
+    const roots = parseCatalogRoots(catalogStdout);
+    live.setResolution(res, mcu, roots);
     channel.appendLine(`[live] resolved ${res.symbols.length} symbols from ${elfPath} (${res.backend}, base=${res.base})`);
+    if (roots === undefined) {
+      channel.appendLine("[live] no catalog in resolution (resolver without --catalog?); variable picker falls back to the type tree");
+    }
     if (res.unresolved.length > 0) {
       channel.appendLine(`[live] unresolved: ${res.unresolved.join(", ")}`);
     }
@@ -2578,6 +2710,7 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(buildDiags);
   const scriptsDir = join(context.extensionPath, "scripts");
   livePanel.configure(scriptsDir, context.workspaceState);
+  void restoreLiveAfterReload(channel, livePanel, scriptsDir, context.workspaceState);
   // Single Live->Graph forwarding subscription (todo2): every sample batch
   // reaching the Live table is forwarded to the Graph panel exactly once.
   // The sink overwrites on assignment, so no duplicate subscription can exist.

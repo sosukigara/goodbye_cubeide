@@ -7,6 +7,9 @@ import type { LiveSample } from "./poller";
 
 export const WATCHLIST_KEY = "stm32ext.liveWatch";
 
+/** Last successfully built ELF + MCU, so a window reload can re-resolve. */
+export const LIVE_ELF_KEY = "stm32ext.liveElf";
+
 /** Cross-window live-session lock so two VSCode windows don't fight over one probe. */
 export interface SessionLock {
   readonly pid: number;
@@ -57,6 +60,8 @@ export interface ExtraWatch {
 export const DEFAULT_EXTRA_SIZE = 4;
 
 /** live_poll.py exit codes the host has to explain (S2 sidecar contract). */
+export const EXIT_NO_PROBE = 3;
+export const EXIT_BUDGET = 4;
 export const EXIT_USB = 5;
 export const EXIT_NO_SYMBOLS = 6;
 
@@ -170,6 +175,12 @@ export function extraArgs(extras: readonly ExtraWatch[]): string[] {
 
 /** Human cause for a sidecar exit code, or undefined when stderr speaks. */
 export function exitCodeReason(code: number): string | undefined {
+  if (code === EXIT_NO_PROBE) {
+    return "ST-LINK が見つかりません — USB ケーブルの接続と電源を確認して「再接続」を押してください";
+  }
+  if (code === EXIT_BUDGET) {
+    return "データ落ちが上限を超えました — Hz を下げるか変数を減らして「再接続」を押してください";
+  }
   if (code === EXIT_NO_SYMBOLS) {
     return "監視できる変数がありません — 「変数追加」から選ぶか、ビルドし直してください";
   }

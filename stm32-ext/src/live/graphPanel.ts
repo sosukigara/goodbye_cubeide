@@ -37,7 +37,9 @@ const GRAPH_CSS = `<style>`
   + `body{font-family:var(--vscode-font-family,sans-serif);font-size:var(--vscode-font-size,13px);color:var(--vscode-foreground,#ccc);margin:0;padding:8px 10px 8px;line-height:1.4;display:flex;flex-direction:column;box-sizing:border-box;overflow:hidden}`
   + `h1{font-size:1em;font-weight:600;margin:0 0 8px;padding:0}`
   + `h1 .ver{font-weight:400;font-size:.85em;opacity:.55}`
-  + `.bar{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:4px}`
+  + `.bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:4px}`
+  + `.grp{display:flex;gap:6px;align-items:center;flex-wrap:wrap}`
+  + `.lbl{font-size:.85em;opacity:.7;white-space:nowrap}`
   + `input,select,button{font:inherit;background:var(--vscode-input-background,#3c3c3c);color:var(--vscode-input-foreground,#ccc);border:1px solid var(--vscode-input-border,rgba(128,128,128,.35));border-radius:2px;padding:3px 7px}`
   + `button{cursor:pointer;background:var(--vscode-button-secondaryBackground,#3a3d41);color:var(--vscode-button-secondaryForeground,#ccc);border-color:transparent}`
   + `button.primary{background:var(--vscode-button-background,#0e639c);color:var(--vscode-button-foreground,#fff)}`
@@ -603,16 +605,17 @@ export function graphPanelHtml(selected: readonly string[] = []): string {
     + `<meta name="viewport" content="width=device-width, initial-scale=1.0">`
     + `<title>${GRAPH_PANEL_TITLE}</title>${GRAPH_CSS}</head>`
     + `<body><h1>${GRAPH_PANEL_TITLE} <span class="ver">v${EXT_VERSION}</span></h1>`
-    + `<div class="bar">`
+    + `<div class="bar" role="toolbar" aria-label="グラフ操作">`
+    + `<div class="grp"><span class="lbl">系列</span>`
     + `<input data-testid="graph-var-picker" type="text" list="graph-names" placeholder="sys.loop_hz" aria-label="系列名">`
     + `<datalist id="graph-names" data-testid="graph-names"></datalist>`
-    + `<button data-testid="graph-add" type="button" class="primary">追加</button>`
-    + `<button data-testid="graph-remove" type="button">削除</button>`
-    + `<label>表示範囲 <select data-testid="graph-window" aria-label="時間幅">`
+    + `<button data-testid="graph-add" type="button" class="primary" title="入力した名前を系列に追加">追加</button>`
+    + `<button data-testid="graph-remove" type="button" title="入力した名前を系列から削除">削除</button></div>`
+    + `<div class="grp"><span class="lbl">表示範囲</span><select data-testid="graph-window" aria-label="時間幅">`
     + `<option value="1000">1s</option><option value="5000">5s</option>`
     + `<option value="10000" selected>10s</option><option value="30000">30s</option>`
-    + `<option value="60000">60s</option></select></label>`
-    + `<button data-testid="graph-download-csv" type="button">CSV保存</button>`
+    + `<option value="60000">60s</option></select>`
+    + `<button data-testid="graph-download-csv" type="button" title="表示中の系列をCSVで保存">CSV保存</button></div>`
     + `<span data-testid="graph-y-unit" class="note"></span></div>`
     + `<p data-testid="graph-error" class="err msg" role="alert"></p>`
     + `<p data-testid="graph-note" class="note msg"></p>`

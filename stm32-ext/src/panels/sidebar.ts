@@ -75,7 +75,7 @@ function basenameOf(p: string): string {
 }
 
 function projectSection(s: SidebarState): string {
-  const empty = `<p class="empty" data-testid="project-empty"${s.projects.length === 0 ? "" : " hidden"}>.cproject なし</p>`;
+  const empty = `<p class="empty" data-testid="project-empty"${s.projects.length === 0 ? "" : " hidden"}>.cproject なし — 対象フォルダを開いて「再検出」</p>`;
   const rows = s.projects.map((p) => {
     const sel = p.dir === s.selectedDir;
     return `<button class="row${sel ? " on" : ""}" data-testid="project-select" `
@@ -138,12 +138,13 @@ function liveSection(s: SidebarState): string {
     + `<p class="note" data-testid="live-add-note" role="status"></p>`
     + `<div data-testid="live-write-result" role="status"></div>`
     + `<p class="warn" data-testid="live-unresolved">${s.unresolved.length > 0 ? `未解決 ${esc(s.unresolved.join(", "))}` : ""}</p>`
+    + `<input data-testid="live-search" type="text" placeholder="変数を検索" value="">`
     + `<table class="live" data-testid="live-tree">`
   + `<thead><tr><th class="n" scope="col">変数</th><th class="v" scope="col">値</th>`
   + `<th class="w" scope="col">書込</th>`
   + `<th class="o" scope="col">操作</th></tr></thead>`
     + `<tbody data-testid="live-rows"></tbody></table>`
-    + `<p class="empty" data-testid="live-empty">監視する変数がありません</p>`;
+  + `<p class="empty" data-testid="live-empty">監視する変数がありません — 「変数追加」から選択</p>`;
 }
 
 function graphSection(s: SidebarState): string {
@@ -151,8 +152,8 @@ function graphSection(s: SidebarState): string {
   const rows = s.graphSeries.map((n) =>
     `<li data-name="${esc(n)}" data-visible="1"><span class="dot"></span>`
     + `<span class="nm">${esc(n)}</span><span class="vv">—</span><span class="st">表示</span></li>`).join("");
-  return `<a class="btn" data-testid="graph-open" role="button" href="command:stm32ext.showGraph">グラフを開く</a>`
-    + `<input data-testid="graph-input" type="text" list="graph-name-list" placeholder="sys.loop_hz" value="${esc(names)}">`
+  return `<a class="btn primary" data-testid="graph-open" role="button" href="command:stm32ext.showGraph">グラフを開く</a>`
+  + `<input data-testid="graph-input" type="text" list="graph-name-list" placeholder="sys.loop_hz" aria-label="グラフに追加する変数名" value="${esc(names)}">`
     + `<datalist id="graph-name-list" data-testid="graph-names"></datalist>`
     + `<button data-testid="graph-add" title="入力した変数をグラフに追加">追加</button> `
     + `<button data-testid="graph-remove" title="入力した変数をグラフから削除">削除</button>`
@@ -184,8 +185,8 @@ export function renderSidebar(
     graph: graphSection(state),
     log: logSection(state),
   };
-  const sections = SIDEBAR_SECTIONS.map((s) =>
-    `<section data-section="${s.id}"><h2>${s.title}</h2>${body[s.id]}</section>`).join("");
+  const sections = SIDEBAR_SECTIONS.map((s, i) =>
+    `<section data-section="${s.id}"><h2><span class="step" aria-hidden="true">${i + 1}</span>${s.title}</h2>${body[s.id]}</section>`).join("");
   // fontPx is a pure presentation input: the host passes stm32ext.uiFontPx so
   // the size is user-adjustable, and every fixed column in the CSS is derived
   // from it. It is a parameter rather than a global read so the HTML stays a
@@ -216,7 +217,10 @@ export const SIDEBAR_CSS = `<style>`
   + `body{font-family:var(--vscode-font-family,sans-serif);font-size:var(--stm32ext-ui-font,15px);color:var(--vscode-foreground,#ccc);margin:0;padding:0 8px 24px;line-height:1.5}`
   + `section{border-top:1px solid var(--vscode-panel-border,rgba(128,128,128,.3));padding:8px 0 10px}`
   + `section:first-child{border-top:none}`
-  + `h2{font-size:.92em;font-weight:600;margin:0 0 6px;letter-spacing:.02em}`
+  + `h2{font-size:.92em;font-weight:600;margin:0 0 6px;letter-spacing:.02em;display:flex;align-items:center;gap:6px}`
+  + `.step{display:inline-flex;align-items:center;justify-content:center;min-width:1.5em;height:1.5em;padding:0 .3em;border-radius:50%;background:var(--vscode-badge-background,#4d4d4d);color:var(--vscode-badge-foreground,#fff);font-size:.85em;font-weight:700;line-height:1}`
+  + `a.btn.primary{background:var(--vscode-button-background,#0e639c);color:var(--vscode-button-foreground,#fff)}`
+  + `.ctrls{display:flex;flex-wrap:wrap;gap:0}`
   // Tap targets: 28px for section buttons, 24px in the dense table. The op
   // glyphs are the only way to add or remove a variable.
   + `button{font:inherit;margin:0 4px 4px 0;padding:5px 12px;min-height:28px;border-radius:2px;border:1px solid transparent;background:var(--vscode-button-secondaryBackground,#3a3d41);color:var(--vscode-button-secondaryForeground,#ccc);cursor:pointer}`
@@ -391,6 +395,8 @@ export const SIDEBAR_SCRIPT: string = [
   "let logBuf = [];",
   "let logFilter = '';",
   "let logPinned = true;",
+  "let catalogQuery = '';",
+  "const catalogText = new Map();",
   "",
   "const show = (s) => {",
   "  const hexed = fmt.get(s.name) === 'hex';",
@@ -428,6 +434,7 @@ export const SIDEBAR_SCRIPT: string = [
   "// -------------------------------------------------------------------- tree",
   "const rows = el('live-rows');",
   "const gi = el('graph-input');",
+  "const cf = el('live-search');",
   "const lf = el('log-filter');",
   "const la = el('log-autoscroll');",
   "let lfTimer = 0;",
@@ -513,7 +520,7 @@ export const SIDEBAR_SCRIPT: string = [
 "};",
 "",
   "const buildTree = (tree, index) => {",
-  "  meta.clear(); cache.clear(); nodes.clear(); lastRaw.clear(); shown.clear();",
+  "  meta.clear(); cache.clear(); nodes.clear(); lastRaw.clear(); shown.clear(); catalogText.clear();",
   "  if (index && typeof index === 'object') for (const k of Object.keys(index)) meta.set(k, index[k]);",
   "  fillNameList();",
   "  if (rows) while (rows.firstChild) rows.removeChild(rows.firstChild);",
@@ -534,17 +541,19 @@ export const SIDEBAR_SCRIPT: string = [
   "      // need it, and a const inside the branch is invisible to the else.",
   "      const typeName = String(nd.type || '');",
   "      const named = typeName !== '' && typeName.indexOf('<anonymous>') < 0;",
+  "      const disp0 = nd.display !== undefined && nd.display !== null ? String(nd.display) : '';",
+  "      catalogText.set(path, (disp0 + ' ' + path + ' ' + typeName).toLowerCase());",
   "      if (kids.length > 0) {",
   "        // A nameless DWARF type is not worth showing: 'sys : struct <anonymous>'",
   "        // is noise in a narrow column. Show the C type name only when there is one.",
-  "        const label = named ? nm + ' : ' + typeName : nm;",
+  "        const label = disp0 !== '' ? disp0 : (named ? nm + ' : ' + typeName : nm);",
   "        rec.tr = groupRow(path === '' ? nm : path, path, label, depth);",
   "        rows.appendChild(rec.tr);",
   "        for (let i = 0; i < kids.length; i += 1) rec.kids.push(walk(kids[i], path, depth + 1, false));",
   "        const leaves = [];",
   "        for (let i = 0; i < rec.kids.length; i += 1) for (let k = 0; k < rec.kids[i].leaves.length; k += 1) leaves.push(rec.kids[i].leaves[k]);",
   "        rec.leaves = leaves;",
-  "        rec.tr.children[1].textContent = leaves.length + '葉';",
+  "        rec.tr.children[1].textContent = leaves.length + '件';",
   "      } else {",
   "        rec.tr = leafRow(path);",
   "        // The row is put in the cache here, so a later sample finds it and never",
@@ -554,7 +563,7 @@ export const SIDEBAR_SCRIPT: string = [
   "        // the last segment, but a full path in `name` would then render as the",
   "        // whole dotted path in a 150px column. Either shape yields the same.",
   "        const leafName = path.split('.').pop() || nm;",
-  "        rec.tr.children[0].textContent = leafName;",
+  "        rec.tr.children[0].textContent = disp0 !== '' ? disp0 : leafName;",
   "        rec.tr.children[0].title = path === leafName ? path : (path + ' — ' + typeName);",
   "        rec.tr.children[0].style.paddingLeft = (6 + Math.min(depth, 4) * 8) + 'px';",
   "        rows.appendChild(rec.tr);",
@@ -582,7 +591,111 @@ export const SIDEBAR_SCRIPT: string = [
   "    walk(tree, '', 0, true);",
   "  }",
   "  refreshEmpty();",
+  "  applyCatalogFilter();",
   "  applyLive();",
+  "};",
+  "",
+  "const buildCatalog = (roots) => {",
+  "  meta.clear(); cache.clear(); nodes.clear(); lastRaw.clear(); shown.clear(); catalogText.clear();",
+  "  if (rows) while (rows.firstChild) rows.removeChild(rows.firstChild);",
+  "  st.hasTree = Array.isArray(roots) && roots.length > 0;",
+  "  st.rootName = '';",
+  "  if (Array.isArray(roots) && rows) {",
+  "    const walkCat = (nd, parentPath, depth) => {",
+  "      const nm = String(nd.name || '');",
+  "      const path = String(nd.path || '') || (parentPath === '' ? nm : parentPath + '.' + nm);",
+  "      const kids = Array.isArray(nd.children) ? nd.children : [];",
+  "      const rec = { path: path, tr: null, leaves: [], kids: [] };",
+  "      const typeName = String(nd.type || '');",
+  "      const disp = nd.display !== undefined && nd.display !== null ? String(nd.display) : '';",
+  "      catalogText.set(path, (disp + ' ' + path + ' ' + typeName).toLowerCase());",
+  "      const named = typeName !== '' && typeName.indexOf('<anonymous>') < 0;",
+  "      if (kids.length > 0) {",
+  "        const label = disp !== '' ? disp : (named ? nm + ' : ' + typeName : nm);",
+  "        rec.tr = groupRow(path, path, label, depth);",
+  "        rows.appendChild(rec.tr);",
+  "        for (let i = 0; i < kids.length; i += 1) rec.kids.push(walkCat(kids[i], path, depth + 1));",
+  "        const leaves = [];",
+  "        for (let i = 0; i < rec.kids.length; i += 1) for (let k = 0; k < rec.kids[i].leaves.length; k += 1) leaves.push(rec.kids[i].leaves[k]);",
+  "        rec.leaves = leaves;",
+  "        rec.tr.children[1].textContent = leaves.length + '件';",
+  "      } else {",
+  "        rec.tr = leafRow(path);",
+  "        rec.tr.children[0].textContent = disp !== '' ? disp : (path.split('.').pop() || nm);",
+  "        rec.tr.children[0].title = path + (typeName !== '' ? ' — ' + typeName : '');",
+  "        rec.tr.children[0].style.paddingLeft = (6 + Math.min(depth, 4) * 8) + 'px';",
+  "        rows.appendChild(rec.tr);",
+  "        cache.set(path, rec.tr);",
+  "        meta.set(path, { size: Number(nd.size) || 0, kind: String(nd.kind || 'scalar'), type: typeName, signed: nd.signed === true, enumerators: nd.enumerators, length: nd.length, bitSize: nd.bitSize, bitOffset: nd.bitOffset, bit_size: nd.bit_size, bit_offset: nd.bit_offset });",
+  "        if (String(nd.kind || '') === 'array') {",
+  "          rec.tr.dataset.pollable = '0';",
+  "          rec.tr.children[0].title = path + ' — ' + typeName + ' (配列: 監視対象外)';",
+  "          const wc = rec.tr.children[2];",
+  "          while (wc.firstChild) wc.removeChild(wc.firstChild);",
+  "          const oc = rec.tr.children[3];",
+  "          while (oc.firstChild) oc.removeChild(oc.firstChild);",
+  "          oc.appendChild(document.createTextNode('—'));",
+  "        } else {",
+  "          rec.leaves = [path];",
+  "        }",
+  "      }",
+  "      nodes.set(path, rec);",
+  "      return rec;",
+  "    };",
+  "    for (let i = 0; i < roots.length; i += 1) walkCat(roots[i], '', 0);",
+  "  }",
+  "  fillNameList();",
+  "  cache.forEach((tr, name) => { tr.dataset.watched = watched.has(name) ? '1' : '0'; });",
+  "  nodes.forEach((rec) => {",
+  "    if (!rec.tr || rec.tr.dataset.kind !== 'group') return;",
+  "    let hit = 0;",
+  "    for (let i = 0; i < rec.leaves.length; i += 1) if (watched.has(rec.leaves[i])) hit += 1;",
+  "    rec.tr.dataset.watched = hit > 0 ? '1' : '0';",
+  "  });",
+  "  refreshEmpty();",
+  "  applyCatalogFilter();",
+  "  applyLive();",
+  "};",
+  "",
+  "const applyCatalogFilter = () => {",
+  "  const q = catalogQuery.trim().toLowerCase();",
+  "  const selfHit = (path) => (catalogText.get(path) || '').indexOf(q) >= 0;",
+  "  const subHit = (rec) => {",
+  "    if (selfHit(rec.path)) return true;",
+  "    for (let i = 0; i < rec.kids.length; i += 1) if (subHit(rec.kids[i])) return true;",
+  "    return false;",
+  "  };",
+  "  const hideSub = (rec) => {",
+  "    if (rec.tr) rec.tr.dataset.hidden = '1';",
+  "    for (let i = 0; i < rec.kids.length; i += 1) hideSub(rec.kids[i]);",
+  "  };",
+  "  const paint = (rec, force) => {",
+  "    if (!force && q !== '' && !subHit(rec)) { hideSub(rec); return; }",
+  "    if (rec.tr) rec.tr.dataset.hidden = '0';",
+  "    if (rec.kids.length === 0) return;",
+  "    const forceKids = force || (q !== '' && selfHit(rec.path));",
+  "    for (let i = 0; i < rec.kids.length; i += 1) paint(rec.kids[i], forceKids);",
+  "  };",
+  "  if (q === '') {",
+  "    nodes.forEach((rec) => { if (rec.tr) rec.tr.dataset.hidden = '0'; });",
+  "  } else {",
+  "    const done = new Set();",
+  "    nodes.forEach((rec) => {",
+  "      const p = rec.path;",
+  "      const dot = p.lastIndexOf('.');",
+  "      const parent = dot < 0 ? '' : p.slice(0, dot);",
+  "      if (parent !== '' && nodes.has(parent)) return;",
+  "      if (done.has(p)) return;",
+  "      const mark = (r) => { done.add(r.path); for (let i = 0; i < r.kids.length; i += 1) mark(r.kids[i]); };",
+  "      mark(rec);",
+  "      paint(rec, false);",
+  "    });",
+  "  }",
+  "  nodes.forEach((rec) => {",
+  "    if (!rec.tr || rec.tr.dataset.kind !== 'group' || rec.tr.dataset.collapsed !== '1') return;",
+  "    const mark = (kid) => { kid.tr.dataset.hidden = '1'; for (let i = 0; i < kid.kids.length; i += 1) mark(kid.kids[i]); };",
+  "    for (let i = 0; i < rec.kids.length; i += 1) mark(rec.kids[i]);",
+  "  });",
   "};",
   "",
   "const setCollapsed = (path, on) => {",
@@ -599,7 +712,7 @@ export const SIDEBAR_SCRIPT: string = [
 "const bulkAdd = (path, label) => {",
 "  const rec = nodes.get(path);",
 "  const all = rec ? rec.leaves : [];",
-"  if (all.length === 0) { note(label + ': 追加できる葉がありません'); return; }",
+  "  if (all.length === 0) { note(label + ': 追加できる変数がありません'); return; }",
   // No cap. It used to stop at 32 leaves and say so in the note, but a
   // variable the user added and can see in the tree must also be watched: the
   // host polls the whole watchlist now, so a slice here only produced a
@@ -773,8 +886,13 @@ export const SIDEBAR_SCRIPT: string = [
   "  }",
   "  const pt = el('live-pause-toggle');",
   "  if (pt) pt.textContent = s === 'paused' ? '再開' : '一時停止';",
-  "  gate('live-start', (s === 'idle' || s === 'error') && st.project !== '' && watched.size > 0,",
-  "    st.project === '' ? 'プロジェクト未選択' : watched.size === 0 ? '監視する変数がありません' : '監視中です', 'live-why');",
+  "  gate('live-start', (s === 'idle' || s === 'error') && st.project !== '',",
+  "    st.project === '' ? 'プロジェクト未選択' : '監視中です', 'live-why');",
+  // An empty watchlist no longer disables 監視開始: pressing it opens the
+  // variable-add flow instead, so the hint names what the press will do.
+  "  if ((s === 'idle' || s === 'error') && st.project !== '' && watched.size === 0) {",
+  "    const hint = reasons.get('live-why') || []; hint.push('監視する変数がありません — 監視開始で「変数追加」が開きます'); reasons.set('live-why', hint);",
+  "  }",
   "  gate('live-stop', on, '監視していません', 'live-why');",
   "  gate('live-pause-toggle', on, s === 'starting' ? '接続中です' : '監視していません', 'live-why');",
   "  gate('live-reconnect', !on, '監視中です', 'live-why');",
@@ -908,8 +1026,10 @@ export const SIDEBAR_SCRIPT: string = [
   "onClick('build-flash', () => post('build-flash'));",
   "onClick('flash-start', () => post('flash'));",
   "onClick('flash-retry', () => post('flash-retry'));",
-  "onClick('live-start', () => post('live-start'));",
-  "onClick('live-stop', () => post('live-stop'));",
+  "onClick('live-start', () => {",
+  "  if (st.project === '') return;",
+  "  post(watched.size === 0 ? 'live-add-watch' : 'live-start');",
+  "});",  "onClick('live-stop', () => post('live-stop'));",
   "onClick('live-reconnect', () => post('live-reconnect'));",
   "onClick('live-export-csv', () => post('live-export-csv'));",
   "onClick('live-add-watch', () => post('live-add-watch'));",
@@ -972,6 +1092,7 @@ export const SIDEBAR_SCRIPT: string = [
   "if (gi) {",
   "  gi.addEventListener('input', () => { applySeries(gi.value); applyGraph(); });",
   "}",
+  "if (cf) cf.addEventListener('input', () => { catalogQuery = cf.value; applyCatalogFilter(); });",
   "if (la) la.addEventListener('change', () => { logPinned = !!la.checked; if (logPinned && logNode) logNode.scrollTop = logNode.scrollHeight; });",
   "if (lf) lf.addEventListener('input', () => {",
   "  logFilter = lf.value;",
@@ -984,6 +1105,7 @@ export const SIDEBAR_SCRIPT: string = [
   "  const m = ev.data || {};",
   "  if (m.kind === 'live-bootstrap') { st.project = m.project || st.project; applyState(m.state); setText(el('live-hz'), (Number(m.hz) || 0) + 'Hz'); return; }",
   "  if (m.kind === 'live-types') { buildTree(m.tree, m.index); return; }",
+  "  if (m.kind === 'live-catalog' && Array.isArray(m.roots)) { buildCatalog(m.roots); return; }",
   "  if (m.kind === 'live-sample' && Array.isArray(m.samples)) {",
   "    const arr = m.samples;",
   "    for (let i = 0; i < arr.length; i += 1) {",

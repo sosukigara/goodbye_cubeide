@@ -390,11 +390,11 @@ volatile struct DebugGlobal debug;
 GCC = shutil.which("arm-none-eabi-gcc")
 
 
-def _build_fixture(directory, dwarf):
+def _build_fixture(directory, dwarf, source=FIXTURE_C):
     src = directory / "fixture.c"
     obj = directory / f"fixture{dwarf}.o"
     elf = directory / f"fixture{dwarf}.elf"
-    src.write_text(FIXTURE_C, encoding="utf-8")
+    src.write_text(source, encoding="utf-8")
     p = run([GCC, "-mcpu=cortex-m4", "-mthumb", f"-gdwarf-{dwarf}", "-O0",
              "-std=gnu11", "-c", str(src), "-o", str(obj)])
     assert p.returncode == 0, p.stderr
@@ -539,3 +539,186 @@ def test_fixture_fallback_backend_agrees_with_pyelftools(fixture_elf, tmp_path):
     reference = resolve(fixture_elf, args=["--all-members"])
     assert fallback["symbols"] == reference["symbols"]
     assert fallback["tree"] == reference["tree"]
+
+
+# ---------------------------------------------------------------------------
+# name-agnostic tree root: the struct is whatever the `debug` global's
+# DW_AT_type points at, not the hardcoded STRUCT_NAME ("DebugGlobal").
+# Covers a real project whose global struct is named `Debug` (unit_swerve):
+# the symbol resolves (base+size) while the type tree came back null.
+# ---------------------------------------------------------------------------
+
+FIXTURE_C_RENAMED = r"""
+#include <stdint.h>
+#include <stdbool.h>
+
+struct Telemetry {
+  uint32_t counter;
+  int16_t  delta;
+  bool     flag;
+  struct {
+    uint8_t level;
+    uint8_t mode;
+  } sub;
+};
+
+volatile struct Telemetry debug;
+"""
+
+
+@pytest.fixture(scope="session")
+def renamed_elf(tmp_path_factory):
+    """Same shape as the firmware, but the struct is NOT named DebugGlobal."""
+    if GCC is None:
+        pytest.skip("arm-none-eabi-gcc not available for the DWARF fixture")
+    return _build_fixture(tmp_path_factory.mktemp("renamed"), 5,
+                           FIXTURE_C_RENAMED)
+
+
+def test_renamed_struct_resolves_tree_from_debug_variable(renamed_elf):
+    res = resolve(renamed_elf, args=["--all-members"])
+    assert res["tree"] is not None
+    assert res["tree"]["type"] == "Telemetry"
+    names = [s["name"] for s in res["symbols"]]
+    assert "counter" in names
+    assert "sub.level" in names
+    assert res["unresolved"] == []
+
+
+def test_renamed_struct_fallback_backend_agrees(renamed_elf, tmp_path):
+    p = run([sys.executable, RESOLVE, renamed_elf, "--all-members", "--json"],
+            env={**os.environ, "PYTHONPATH": _blocked_pyelftools(tmp_path)})
+    assert p.returncode == 0, p.stderr
+    fallback = json.loads(p.stdout)
+    assert fallback["backend"] == "nm+readelf"
+    assert fallback["tree"] is not None
+    assert fallback["tree"]["type"] == "Telemetry"
+    reference = resolve(renamed_elf, args=["--all-members"])
+    assert fallback["symbols"] == reference["symbols"]
+    assert fallback["tree"] == reference["tree"]
+
+
+def _load_resolver_module():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        "elf_resolve", os.path.join(EXT, "scripts", "elf_resolve.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_debug_variable_selection_ignores_member_and_type_dies():
+    mod = _load_resolver_module()
+    telemetry, decoy = {"off": 1}, {"off": 2}
+    nodes = [
+        {"tag": "DW_TAG_structure_type", "name": "Outer",
+         "type": None, "children": []},
+        # a member named `debug`: its parent is a struct, not a global
+        {"tag": "DW_TAG_member", "name": "debug", "type": 90,
+         "children": []},
+        # a type (typedef) named `debug`: not a variable either
+        {"tag": "DW_TAG_typedef", "name": "debug", "type": 91,
+         "children": []},
+        # the one true global: variable DIE pointing at the real struct
+        {"tag": "DW_TAG_variable", "name": "debug", "type": 1,
+         "children": []},
+        {"tag": "DW_TAG_structure_type", "name": "Telemetry",
+         "type": None, "children": [],
+         "off": 1, "byte_size": 8},
+        # stale-name decoy: must lose to the variable's own type
+        {"tag": "DW_TAG_structure_type", "name": "DebugGlobal",
+         "type": None, "children": [],
+         "off": 2, "byte_size": 4},
+    ]
+    by_off = {1: nodes[4], 2: nodes[5], 90: None, 91: None}
+    root, actual = mod._variable_root(nodes, by_off.get)
+    assert root is not None
+    assert root["name"] == "Telemetry"
+    assert actual == "Telemetry"
+
+
+# ---------------------------------------------------------------------------
+# --catalog: every writable RAM variable becomes a browsable root, not just
+# the one named `debug`. The fixture carries a renamed struct plus extra RAM
+# variables in different sections (.data, .noinit) so the catalog path is
+# actually exercised without copying a multi-MB firmware ELF into the repo.
+# ---------------------------------------------------------------------------
+
+FIXTURE_C_CATALOG = r"""
+#include <stdint.h>
+#include <stdbool.h>
+
+struct TelemetryCatalog {
+  uint32_t counter;
+  int16_t  delta;
+  struct { uint8_t level; uint8_t mode; } sub;
+};
+
+volatile struct TelemetryCatalog debug;   /* .bss */
+uint32_t extra_ticks = 0x12345678;        /* .data: initialized */
+__attribute__((section(".noinit"))) uint8_t noinit_blob[8];  /* RAM bank */
+"""
+
+
+@pytest.fixture(scope="session")
+def catalog_elf(tmp_path_factory):
+    """Renamed struct plus extra RAM variables outside .bss."""
+    if GCC is None:
+        pytest.skip("arm-none-eabi-gcc not available for the DWARF fixture")
+    return _build_fixture(tmp_path_factory.mktemp("catalog"), 5,
+                           FIXTURE_C_CATALOG)
+
+
+def test_catalog_lists_every_ram_variable_with_display(catalog_elf):
+    res = resolve(catalog_elf, args=["--all-members", "--catalog"])
+    assert isinstance(res["catalog_skipped"], int)
+    names = {r["name"] for r in res["roots"]}
+    assert "debug" in names
+    assert "extra_ticks" in names
+    assert "noinit_blob" in names
+    for root in res["roots"]:
+        assert {"name", "path", "address", "size", "type", "kind"} <= set(root)
+        assert root["path"] == root["name"]
+        assert root["address"].startswith("0x")
+        assert root["size"] > 0
+        assert isinstance(root["display"], str) and root["display"]
+    dbg = next(r for r in res["roots"] if r["name"] == "debug")
+    assert dbg["kind"] == "struct"
+    assert dbg["display"] == "debug"
+    assert {c["path"] for c in dbg["children"]} >= {
+        "debug.counter", "debug.delta", "debug.sub"}
+    scalar = next(r for r in res["roots"] if r["name"] == "extra_ticks")
+    assert scalar["kind"] == "scalar"
+    assert scalar.get("children", []) == []
+    assert scalar["size"] == 4
+    assert "debug.counter" in res["index"]
+    assert "debug.sub.level" in res["index"]
+    assert "extra_ticks" in res["index"]
+    assert "noinit_blob" in res["index"]
+
+
+def test_catalog_is_additive_and_absent_without_flag(catalog_elf):
+    plain = resolve(catalog_elf, args=["--all-members"])
+    assert "roots" not in plain
+    assert "catalog_skipped" not in plain
+    cat = resolve(catalog_elf, args=["--all-members", "--catalog"])
+    assert cat["tree"] == plain["tree"]
+    assert cat["base"] == plain["base"] and cat["size"] == plain["size"]
+    for name, meta in plain["index"].items():
+        assert cat["index"][name] == meta
+    for sym in plain["symbols"]:
+        assert sym in cat["symbols"]
+
+
+def test_catalog_fallback_backend_agrees(catalog_elf, tmp_path):
+    p = run([sys.executable, RESOLVE, catalog_elf, "--all-members",
+             "--catalog", "--json"],
+            env={**os.environ, "PYTHONPATH": _blocked_pyelftools(tmp_path)})
+    assert p.returncode == 0, p.stderr
+    fallback = json.loads(p.stdout)
+    assert fallback["backend"] == "nm+readelf"
+    reference = resolve(catalog_elf, args=["--all-members", "--catalog"])
+    assert fallback["roots"] == reference["roots"]
+    assert fallback["symbols"] == reference["symbols"]
+    assert fallback["index"] == reference["index"]
+    assert fallback["catalog_skipped"] == reference["catalog_skipped"]

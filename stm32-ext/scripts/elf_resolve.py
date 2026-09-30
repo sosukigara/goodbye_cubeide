@@ -21,6 +21,7 @@ Usage:
   elf_resolve.py <firmware.elf> [--prefix arm-none-eabi-] [--json]
       [--member sys.loop_hz]  (repeatable; default: a curated watch list)
       [--all-members]         (every leaf of DebugGlobal, declaration order)
+      [--catalog]             (every writable RAM variable as extra roots)
 
 Output (--json, one object on stdout):
   {"elf": path, "base": "0x200000b4", "size": 976, "end": "0x20000484",
@@ -30,9 +31,15 @@ Output (--json, one object on stdout):
                 "signed": false}, ...],
    "tree": {"name": "debug", "path": "", "address": "0x200000b4", "size": 976,
             "type": "DebugGlobal", "kind": "struct", "children": [...]},
-   "index": {"sys.loop_hz": {"size": 4, "kind": "scalar", "signed": false,
-                             "type": "uint32_t"}, ...},
-   "unresolved": ["name", ...]}
+    "index": {"sys.loop_hz": {"size": 4, "kind": "scalar", "signed": false,
+                              "type": "uint32_t"}, ...},
+    "unresolved": ["name", ...]}
+
+With --catalog two fields are appended and `symbols`/`index` gain one flat
+entry per catalog path; everything else is byte-identical to the call
+without it:
+    "roots": [{"name": "debug", "path": "debug", "display": "debug", ...}],
+    "catalog_skipped": 12 (candidates with no DWARF type: skipped, counted)
 
 Three `size` meanings coexist; do not conflate them:
   * top-level `size`              -> byte span of the DebugGlobal window
@@ -73,6 +80,10 @@ MISSING_DEBUG = ("symbol `debug` not found; is this a firmware ELF with "
                  "debug.hpp linked in?")
 
 STRUCT_NAME = "DebugGlobal"
+
+RAM_SECTION_PREFIXES = (".data", ".bss", ".ccmram", ".ram", ".sram",
+                        ".noinit")
+SHF_WRITE = 0x1
 
 # DW_AT_encoding is a numeric constant, never a string (spec 1.2).
 DW_ATE_BOOLEAN = 0x02
@@ -199,6 +210,48 @@ def peel(model, node, limit=16):
         node = model.resolve(node.get("type"))
         seen += 1
     return node
+
+
+def _variable_root(nodes, lookup):
+    """Root struct DIE from the `debug` variable's own DW_AT_type.
+
+    Only DW_TAG_variable candidates count: a member or a type may share
+    the name `debug`. Returns (root, actual); actual names the peeled
+    type so the failure message can say what was really found.
+    """
+    actual = None
+    for node in nodes:
+        if node.get("tag") != "DW_TAG_variable":
+            continue
+        if node.get("name") != "debug":
+            continue
+        ref = node.get("type")
+        if not isinstance(ref, int) or isinstance(ref, bool):
+            continue
+        target = lookup(ref)
+        if target is None:
+            continue
+        peeled, seen = target, 0
+        while (peeled is not None and peeled.get("tag") in WRAPPER_TAGS
+               and seen < 16):
+            nxt = peeled.get("type")
+            if not isinstance(nxt, int) or isinstance(nxt, bool):
+                peeled = None
+                break
+            peeled = lookup(nxt)
+            seen += 1
+        if actual is None and peeled is not None:
+            actual = peeled.get("name") or peeled.get("tag")
+        if peeled is not None and peeled.get("tag") in CONTAINER_TAGS:
+            return peeled, actual
+    return None, actual
+
+
+def _no_root_message(actual, struct_name):
+    return (
+        f"no struct/union DIE for the `debug` global "
+        f"(type `{actual or 'unknown'}`, fallback `{struct_name}`); "
+        f"is this a firmware ELF with debug.hpp linked in?")
 
 
 def _int(node, key):
@@ -402,6 +455,65 @@ def _leaf_entry(path, offset, entry):
     return leaf
 
 
+def _walk_members(model, node, path, off_abs, base, leaves):
+    """Children of one struct/union node; leaves appended in order.
+
+    Shared by build_tree (the `debug` window) and the --catalog roots, so
+    there is exactly one DIE-walking implementation for nested members.
+    """
+    children = []
+    members = [c for c in node.get("children") or []
+               if c.get("tag") == "DW_TAG_member"]
+    for index, member in enumerate(members):
+        segment = member.get("name")
+        if segment is None:
+            segment = str(index)
+        bits = _bitfield_of(member)
+        loc = _member_offset(member)
+        if loc is None and bits is not None:
+            # DWARF3+ bitfield: the location lives inside the bit offset.
+            loc = bits[1] // 8
+        if loc is None:
+            continue  # static/external member: not addressable in RAM
+        if bits is not None:
+            # Re-anchor the window on the field itself so the reported
+            # width always covers every bit of it.
+            loc = bits[1] // 8
+        child_off = off_abs + loc
+        child_path = f"{path}.{segment}" if path else segment
+        info = classify_member(model, member)
+        entry = {
+            "name": segment,
+            "path": child_path,
+            "type": info["type"],
+            "kind": info["kind"],
+            "size": info["size"],
+            "signed": info["signed"],
+            "address": f"0x{base + child_off:08x}",
+            "offset": child_off,
+        }
+        if info["length"] is not None:
+            entry["length"] = info["length"]
+        if bits is not None:
+            bit_size, abs_bits = bits
+            within = abs_bits % 8
+            entry["kind"] = "bitfield"
+            entry["size"] = max(1, math.ceil((within + bit_size) / 8))
+            entry["bit_size"] = bit_size
+            entry["bit_offset"] = within
+        if info["enumerators"]:
+            entry["enumerators"] = info["enumerators"]
+        if info["container"] is not None:
+            entry["children"] = _walk_members(model, info["container"],
+                                              child_path, child_off,
+                                              base, leaves)
+        else:
+            entry["children"] = []
+            leaves.append(_leaf_entry(child_path, child_off, entry))
+        children.append(entry)
+    return children
+
+
 def build_tree(model, base, root_name="debug"):
     """Walk the whole struct. Returns (tree node, leaves in declaration order).
 
@@ -412,59 +524,6 @@ def build_tree(model, base, root_name="debug"):
     gets a tree node like any other.
     """
     leaves = []
-
-    def visit(node, path, off_abs):
-        children = []
-        members = [c for c in node.get("children") or []
-                   if c.get("tag") == "DW_TAG_member"]
-        for index, member in enumerate(members):
-            segment = member.get("name")
-            if segment is None:
-                segment = str(index)
-            bits = _bitfield_of(member)
-            loc = _member_offset(member)
-            if loc is None and bits is not None:
-                # DWARF3+ bitfield: the location lives inside the bit offset.
-                loc = bits[1] // 8
-            if loc is None:
-                continue  # static/external member: not addressable in RAM
-            if bits is not None:
-                # Re-anchor the window on the field itself so the reported
-                # width always covers every bit of it.
-                loc = bits[1] // 8
-            child_off = off_abs + loc
-            child_path = f"{path}.{segment}" if path else segment
-            info = classify_member(model, member)
-            entry = {
-                "name": segment,
-                "path": child_path,
-                "type": info["type"],
-                "kind": info["kind"],
-                "size": info["size"],
-                "signed": info["signed"],
-                "address": f"0x{base + child_off:08x}",
-                "offset": child_off,
-            }
-            if info["length"] is not None:
-                entry["length"] = info["length"]
-            if bits is not None:
-                bit_size, abs_bits = bits
-                within = abs_bits % 8
-                entry["kind"] = "bitfield"
-                entry["size"] = max(1, math.ceil((within + bit_size) / 8))
-                entry["bit_size"] = bit_size
-                entry["bit_offset"] = within
-            if info["enumerators"]:
-                entry["enumerators"] = info["enumerators"]
-            if info["container"] is not None:
-                entry["children"] = visit(info["container"], child_path,
-                                          child_off)
-            else:
-                entry["children"] = []
-                leaves.append(_leaf_entry(child_path, child_off, entry))
-            children.append(entry)
-        return children
-
     root = model.root
     tree = {
         "name": root_name,
@@ -474,7 +533,7 @@ def build_tree(model, base, root_name="debug"):
         "size": _leaf_size(root),
         "type": _display_type(model, root) or STRUCT_NAME,
         "kind": "struct",
-        "children": visit(root, "", 0),
+        "children": _walk_members(model, root, "", 0, base, leaves),
     }
     return tree, leaves
 
@@ -586,20 +645,91 @@ def _py_convert(die, by_off):
     return node
 
 
-def pyelftools_model(elffile, struct_name=STRUCT_NAME):
-    """Build a DwarfModel for `struct_name`, or None when it is absent."""
-    dwarf = elffile.get_dwarf_info()
-    root_die = None
+def _py_type_ref(die):
+    a = die.attributes.get("DW_AT_type")
+    if a is None or not isinstance(a.value, int) \
+            or isinstance(a.value, bool):
+        return None
+    return (a.value if a.form == "DW_FORM_ref_addr"
+            else die.cu.cu_offset + a.value)
+
+
+def _py_linkage(die):
+    try:
+        a = die.attributes.get("DW_AT_linkage_name")
+        if a is None:
+            return None
+        v = a.value
+        return v.decode("utf-8", "replace") if isinstance(v, bytes) else str(v)
+    except Exception:
+        return None
+
+
+def _py_root_from_debug_variable(dwarf, collect=False):
+    """Root struct DIE from the `debug` variable's own DW_AT_type.
+
+    Same rule as _variable_root, over pyelftools DIEs: only
+    DW_TAG_variable candidates, wrappers peeled, first struct/union wins.
+    With collect, every variable DIE is also recorded as (linkage, name,
+    absolute type ref) in the same single pass, and the scan runs to the
+    end instead of returning at the first struct match.
+    """
+    actual = None
+    found = None
+    variables = [] if collect else None
     for cu in dwarf.iter_CUs():
         for die in cu.iter_DIEs():
-            if die.tag == "DW_TAG_structure_type" \
-                    and _die_name(die) == struct_name:
-                root_die = die
-                break
-        if root_die is not None:
-            break
+            if die.tag != "DW_TAG_variable":
+                continue
+            if collect:
+                variables.append((_py_linkage(die), _die_name(die),
+                                  _py_type_ref(die)))
+            if _die_name(die) != "debug":
+                continue
+            ref = _py_type_ref(die)
+            if ref is None:
+                continue
+            try:
+                target = cu.get_DIE_from_refaddr(ref)
+            except Exception:
+                continue
+            peeled, seen = target, 0
+            while peeled is not None and peeled.tag in WRAPPER_TAGS \
+                    and seen < 16:
+                nxt = _py_type_ref(peeled)
+                if nxt is None:
+                    peeled = None
+                    break
+                try:
+                    peeled = peeled.cu.get_DIE_from_refaddr(nxt)
+                except Exception:
+                    peeled = None
+                    break
+                seen += 1
+            if actual is None and peeled is not None:
+                actual = _die_name(peeled) or peeled.tag
+            if peeled is not None and peeled.tag in CONTAINER_TAGS:
+                if not collect:
+                    return peeled, actual, variables
+                if found is None:
+                    found = peeled
+    if found is not None:
+        return found, actual, variables
+    return None, actual, variables
+
+
+def _model_from_root_die(root_die, actual, struct_name, dwarf):
     if root_die is None:
-        return None
+        for cu in dwarf.iter_CUs():
+            for die in cu.iter_DIEs():
+                if die.tag == "DW_TAG_structure_type" \
+                        and _die_name(die) == struct_name:
+                    root_die = die
+                    break
+            if root_die is not None:
+                break
+    if root_die is None:
+        raise MissingDebug(_no_root_message(actual, struct_name))
     by_off = {}
     cu = root_die.cu
 
@@ -615,11 +745,25 @@ def pyelftools_model(elffile, struct_name=STRUCT_NAME):
     return DwarfModel(_py_convert(root_die, by_off), lookup)
 
 
-def pyelftools_backend(elf, struct_name=STRUCT_NAME):
+def pyelftools_model(elffile, struct_name=STRUCT_NAME):
+    """Build a DwarfModel for the `debug` global's own type.
+
+    Falls back to `struct_name`, and raises MissingDebug naming the
+    actual type when neither yields a struct/union DIE.
+    """
+    dwarf = elffile.get_dwarf_info()
+    root_die, actual, _ = _py_root_from_debug_variable(dwarf)
+    return _model_from_root_die(root_die, actual, struct_name, dwarf)
+
+
+def pyelftools_backend(elf, struct_name=STRUCT_NAME, want_catalog=False,
+                       prefix="arm-none-eabi-"):
     """Try pyelftools; return a dict, or None when unavailable/failed.
 
     `{"stripped": True}` / `{"missing": True}` are definitive negatives from
     the symbol table and suppress the nm fallback (no half-guesses).
+    With want_catalog, `{"catalog": ...}` carries the RAM-variable roots,
+    built from the same single DWARF pass that finds the `debug` type.
     """
     try:
         from elftools.elf.elffile import ELFFile
@@ -640,12 +784,34 @@ def pyelftools_backend(elf, struct_name=STRUCT_NAME):
             if base is None:
                 return {"stripped": False, "missing": True}
             has_di = elffile.get_section_by_name(".debug_info") is not None
-            model = pyelftools_model(elffile, struct_name) if has_di else None
+            catalog = None
+            if has_di and want_catalog:
+                dwarf = elffile.get_dwarf_info()
+                root_die, actual, variables = \
+                    _py_root_from_debug_variable(dwarf, collect=True)
+                model = _model_from_root_die(root_die, actual, struct_name,
+                                             dwarf)
+                by_linkage, by_name = {}, {}
+                for linkage, name, ref in variables:
+                    if linkage and linkage not in by_linkage:
+                        by_linkage[linkage] = (name, ref)
+                    if name and name not in by_name:
+                        by_name[name] = (name, ref)
+                roots, flats, skipped = build_catalog(
+                    _catalog_model(dwarf), by_linkage, by_name,
+                    _py_candidates(elffile), prefix)
+                catalog = {"roots": roots, "flats": flats,
+                           "skipped": skipped}
+            else:
+                model = pyelftools_model(elffile, struct_name) \
+                    if has_di else None
             return {
                 "stripped": False, "base": base, "size": size,
                 "has_debug_info": has_di, "model": model,
-                "backend": "pyelftools",
+                "catalog": catalog, "backend": "pyelftools",
             }
+    except MissingDebug:
+        raise
     except Exception:
         return None
 
@@ -695,7 +861,8 @@ def readelf_die_model(elf, prefix, struct_name=STRUCT_NAME):
                 continue
             current = {
                 "depth": depth, "off": off, "tag": tag, "name": None,
-                "type": None, "loc": None, "byte_size": None,
+                "type": None, "loc": None, "linkage": None,
+                "byte_size": None,
                 "encoding": None, "bit_size": None, "data_bit_offset": None,
                 "bit_offset": None, "upper_bound": None, "count": None,
                 "const_value": None, "children": [],
@@ -712,6 +879,11 @@ def readelf_die_model(elf, prefix, struct_name=STRUCT_NAME):
             nm = _NAME_RE.match(value)
             if nm:
                 current["name"] = nm.group(1)
+        elif key in ("linkage_name", "MIPS_linkage_name") \
+                and current["linkage"] is None:
+            nm = _NAME_RE.match(value)
+            if nm:
+                current["linkage"] = nm.group(1)
         elif key == "type" and current["type"] is None:
             rm = _REF_RE.match(value.strip())
             if rm:
@@ -725,13 +897,15 @@ def readelf_die_model(elf, prefix, struct_name=STRUCT_NAME):
     if not nodes:
         return None
     by_off = {n["off"]: n for n in nodes}
-    root = None
-    for n in nodes:
-        if n["tag"] == "DW_TAG_structure_type" and n["name"] == struct_name:
-            root = n
-            break
+    root, actual = _variable_root(nodes, by_off.get)
     if root is None:
-        return None
+        for n in nodes:
+            if n["tag"] == "DW_TAG_structure_type" \
+                    and n["name"] == struct_name:
+                root = n
+                break
+    if root is None:
+        raise MissingDebug(_no_root_message(actual, struct_name))
     stack = []
     for n in nodes:
         while stack and stack[-1]["depth"] >= n["depth"]:
@@ -742,7 +916,18 @@ def readelf_die_model(elf, prefix, struct_name=STRUCT_NAME):
     for n in nodes:
         n.pop("depth", None)
         n.pop("off", None)
-    return DwarfModel(root, by_off.get)
+    model = DwarfModel(root, by_off.get)
+    by_linkage, by_name = {}, {}
+    for n in nodes:
+        if n["tag"] != "DW_TAG_variable":
+            continue
+        ref = (n.get("name"), n.get("type"))
+        if n.get("linkage") and n["linkage"] not in by_linkage:
+            by_linkage[n["linkage"]] = ref
+        if n.get("name") and n["name"] not in by_name:
+            by_name[n["name"]] = ref
+    model.catalog_variables = (by_linkage, by_name)
+    return model
 
 
 # ---------------------------------------------------------------------------
@@ -750,15 +935,17 @@ def readelf_die_model(elf, prefix, struct_name=STRUCT_NAME):
 # ---------------------------------------------------------------------------
 
 
-def resolve(elf, prefix="arm-none-eabi-", struct_name=STRUCT_NAME):
+def resolve(elf, prefix="arm-none-eabi-", struct_name=STRUCT_NAME,
+            want_catalog=False):
     """Resolve the DebugGlobal window and its whole type tree.
 
     Returns {"elf", "base", "size", "end", "has_debug_info", "backend",
     "tree", "leaves"}. `leaves` is every leaf in declaration order; the CLI
     filters it down to the requested members. Raises StripError or
     MissingDebug for the two conditions that must be reported explicitly.
+    With want_catalog, "catalog" carries {"roots", "flats", "skipped"}.
     """
-    result = pyelftools_backend(elf, struct_name)
+    result = pyelftools_backend(elf, struct_name, want_catalog, prefix)
     if result is not None and not result.get("stripped") \
             and not result.get("missing"):
         base, size = result["base"], result["size"]
@@ -768,6 +955,7 @@ def resolve(elf, prefix="arm-none-eabi-", struct_name=STRUCT_NAME):
             # unknowable, so this is the same explicit -g3 error as stripped.
             raise StripError(STRIP_ERROR)
         model = result.get("model")
+        catalog = result.get("catalog")
     elif result is not None and result.get("stripped"):
         raise StripError(STRIP_ERROR)
     elif result is not None and result.get("missing"):
@@ -787,8 +975,13 @@ def resolve(elf, prefix="arm-none-eabi-", struct_name=STRUCT_NAME):
             raise StripError(STRIP_ERROR)
         try:
             model = readelf_die_model(elf, prefix, struct_name)
+        except MissingDebug:
+            raise
         except Exception:
             model = None
+        catalog = None
+        if want_catalog and model is not None:
+            catalog = _catalog_from_readelf(elf, prefix, model)
 
     tree, leaves = (None, [])
     if model is not None:
@@ -804,6 +997,7 @@ def resolve(elf, prefix="arm-none-eabi-", struct_name=STRUCT_NAME):
         "backend": backend,
         "tree": tree,
         "leaves": leaves,
+        "catalog": catalog,
     }
 
 
@@ -828,9 +1022,201 @@ def index_of(leaves):
     return index
 
 
+# ---------------------------------------------------------------------------
+# --catalog: every writable RAM variable as a browsable root
+# ---------------------------------------------------------------------------
+
+
+def _is_ram_section(writable, name):
+    return writable or name.startswith(RAM_SECTION_PREFIXES)
+
+
+def _py_candidates(elffile):
+    """Writable STT_OBJECT symtab entries: (name, address, size)."""
+    symtab = elffile.get_section_by_name(".symtab")
+    if symtab is None:
+        return []
+    out = []
+    for sym in symtab.iter_symbols():
+        if not sym.name:
+            continue
+        entry = sym.entry
+        if entry["st_info"]["type"] != "STT_OBJECT":
+            continue
+        if entry["st_size"] <= 0:
+            continue
+        shndx = entry["st_shndx"]
+        if not isinstance(shndx, int):
+            continue
+        try:
+            sec = elffile.get_section(shndx)
+        except Exception:
+            continue
+        if sec is None:
+            continue
+        if not _is_ram_section(sec["sh_flags"] & SHF_WRITE, sec.name):
+            continue
+        out.append((sym.name, entry["st_value"], entry["st_size"]))
+    return out
+
+
+def _catalog_model(dwarf):
+    """DwarfModel resolving across every CU, for catalog type lookups."""
+    by_off = {}
+
+    def lookup(ref):
+        node = by_off.get(ref)
+        if node is not None:
+            return node
+        try:
+            return _py_convert(dwarf.get_DIE_from_refaddr(ref), by_off)
+        except Exception:
+            return None
+
+    return DwarfModel(None, lookup)
+
+
+def _demangle_map(names, prefix="arm-none-eabi-"):
+    """Mangled -> qualified display name; identity when c++filt is missing."""
+    identity = {n: n for n in names}
+    if not names:
+        return identity
+    blob = "\n".join(names) + "\n"
+    for exe in ("%sc++filt" % prefix, "c++filt"):
+        try:
+            p = subprocess.run([exe], input=blob,
+                               capture_output=True, text=True)
+        except Exception:
+            continue
+        if p.returncode != 0:
+            continue
+        lines = p.stdout.splitlines()
+        if len(lines) != len(names):
+            continue
+        return {n: (d or n) for n, d in zip(names, lines)}
+    return identity
+
+
+def _catalog_root(model, type_ref, addr, sym_name, display):
+    """One catalog root from a variable's type ref, via the shared walker.
+
+    Returns (root node, flat entries); (None, []) when the DWARF type
+    cannot be resolved, which the caller counts as skipped, never fatal.
+    """
+    if peel(model, model.resolve(type_ref)) is None:
+        return None, []
+    info = classify_member(model, {"type": type_ref})
+    leaves = []
+    entry = {
+        "name": sym_name,
+        "path": sym_name,
+        "type": info["type"],
+        "kind": info["kind"],
+        "size": info["size"],
+        "signed": info["signed"],
+        "address": f"0x{addr:08x}",
+        "offset": 0,
+    }
+    if info["length"] is not None:
+        entry["length"] = info["length"]
+    if info["enumerators"]:
+        entry["enumerators"] = info["enumerators"]
+    if info["container"] is not None:
+        entry["children"] = _walk_members(model, info["container"], sym_name,
+                                          0, addr, leaves)
+    else:
+        entry["children"] = []
+    entry["display"] = display
+    return entry, [_leaf_entry(sym_name, 0, entry)] + leaves
+
+
+def build_catalog(model, by_linkage, by_name, candidates, prefix):
+    """Roots, flat path entries and skip count for the catalog candidates."""
+    displays = _demangle_map([n for n, _, _ in candidates], prefix)
+    roots = []
+    flats = []
+    skipped = 0
+    for sym_name, addr, _size in candidates:
+        hit = by_linkage.get(sym_name)
+        if hit is None:
+            hit = by_name.get(sym_name)
+        if hit is None:
+            skipped += 1
+            continue
+        _vname, type_ref = hit
+        try:
+            root, flat = _catalog_root(model, type_ref, addr, sym_name,
+                                       displays.get(sym_name) or sym_name)
+        except Exception:
+            skipped += 1
+            continue
+        if root is None:
+            skipped += 1
+            continue
+        roots.append(root)
+        flats.extend(flat)
+    return roots, flats, skipped
+
+
+_SECTION_RE = re.compile(
+    r"\s*\[\s*(\d+)\]\s*(\S+)\s+\S+\s+[0-9a-fA-F]+\s+[0-9a-fA-F]+\s+"
+    r"[0-9a-fA-F]+\s+\S+\s*([A-Z]*)")
+_SYMTAB_RE = re.compile(
+    r"^\s*\d+:\s*([0-9a-fA-F]+)\s+(\d+)\s+(\S+)\s+\S+\s+\S+\s+(\S+)\s+"
+    r"(\S+)\s*$")
+
+
+def _readelf_sections(elf, prefix):
+    p = run([f"{prefix}readelf", "-W", "-S", elf])
+    if p.returncode != 0:
+        return None
+    secs = {}
+    for line in p.stdout.splitlines():
+        m = _SECTION_RE.match(line)
+        if m:
+            secs[int(m.group(1))] = (m.group(2), m.group(3) or "")
+    return secs
+
+
+def _readelf_candidates(elf, prefix):
+    """Same writable-OBJECT rule as _py_candidates, via readelf -s/-S."""
+    secs = _readelf_sections(elf, prefix)
+    p = run([f"{prefix}readelf", "-W", "-s", elf])
+    if secs is None or p.returncode != 0:
+        return None
+    out = []
+    for line in p.stdout.splitlines():
+        m = _SYMTAB_RE.match(line)
+        if not m:
+            continue
+        addr, size, typ, ndx, name = (int(m.group(1), 16),
+                                      int(m.group(2)), m.group(3),
+                                      m.group(4), m.group(5))
+        if typ != "OBJECT" or size <= 0 or not name or not ndx.isdigit():
+            continue
+        sec = secs.get(int(ndx))
+        if sec is None:
+            continue
+        if not _is_ram_section("W" in sec[1], sec[0]):
+            continue
+        out.append((name, addr, size))
+    return out
+
+
+def _catalog_from_readelf(elf, prefix, model):
+    cands = _readelf_candidates(elf, prefix)
+    if cands is None:
+        return {"roots": [], "flats": [], "skipped": 0}
+    by_linkage, by_name = getattr(model, "catalog_variables", ({}, {}))
+    roots, flats, skipped = build_catalog(model, by_linkage, by_name,
+                                          cands, prefix)
+    return {"roots": roots, "flats": flats, "skipped": skipped}
+
+
 def _main(argv):
     prefix = "arm-none-eabi-"
     want_all = False
+    want_catalog = False
     extra = []
     positional = []
     i = 1
@@ -847,6 +1233,9 @@ def _main(argv):
         elif a == "--all-members":
             want_all = True
             i += 1
+        elif a == "--catalog":
+            want_catalog = True
+            i += 1
         elif a.startswith("--"):
             print(f"unknown arg: {a}", file=sys.stderr)
             return 2
@@ -859,7 +1248,7 @@ def _main(argv):
     elf = positional[0]
 
     try:
-        res = resolve(elf, prefix)
+        res = resolve(elf, prefix, want_catalog=want_catalog)
     except (StripError, MissingDebug) as exc:
         print(f"elf_resolve: {exc}\nelf={elf}", file=sys.stderr)
         return 2
@@ -881,7 +1270,7 @@ def _main(argv):
         else:
             symbols.append(leaf)
 
-    print(json.dumps({
+    body = {
         "elf": res["elf"],
         "base": res["base"],
         "end": res["end"],
@@ -892,7 +1281,15 @@ def _main(argv):
         "tree": res["tree"],
         "index": index_of(res["leaves"]),
         "unresolved": unresolved,
-    }, indent=2))
+    }
+    if want_catalog and res.get("catalog") is not None:
+        catalog = res["catalog"]
+        body["symbols"] = symbols + catalog["flats"]
+        body["index"] = {**body["index"],
+                         **index_of(catalog["flats"])}
+        body["roots"] = catalog["roots"]
+        body["catalog_skipped"] = catalog["skipped"]
+    print(json.dumps(body, indent=2))
     return 0
 
 
