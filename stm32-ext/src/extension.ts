@@ -87,6 +87,13 @@ import {
 } from "./live/variablePanel";
 import { WatchBatcher } from "./live/watchBatch";
 import { resolveDapLaunch } from "./debug/dapLaunch";
+import {
+  BUILD_PANEL_TITLE,
+  BUILD_PANEL_VIEW_TYPE,
+  mountBuildPanel,
+  parseBuildPanelMessage,
+  unmountBuildPanel,
+} from "./live/buildPanel";
 import { isUnder } from "./live/namePath";
 import { buildWatchPickItems } from "./live/pickItems";
 
@@ -2048,18 +2055,43 @@ class BuildPanelProvider {
   get sidebarState(): BuildPanelState {
     return this.state;
   }
-  private postTarget?: vscode.Webview;
+  /** Every live surface: the sidebar webview plus any open build tab. */
+  private readonly targets = new Set<vscode.Webview>();
   private onSettled?: (state: BuildPanelState) => void;
   setPostTarget(target: vscode.Webview): void {
-    this.postTarget = target;
+    this.targets.add(target);
+  }
+  removePostTarget(target: vscode.Webview): void {
+    this.targets.delete(target);
+  }
+  /** Full snapshot for a freshly opened build tab (seed + replay). */
+  snapshot(): {
+    status: string; buildPercent: number; elfPath: string;
+    elapsedMs?: number;
+    diagnostics: { kind: string; file: string; line: number; col: number; message: string }[];
+    failureCause?: string;
+  } {
+    const b = this.state;
+    return {
+      status: b.status,
+      buildPercent: b.progress !== undefined && b.progress.total > 0
+        ? Math.min(100, Math.round((b.progress.done / b.progress.total) * 100))
+        : b.status === "ok" ? 100 : 0,
+      elfPath: b.elfPath ?? "",
+      ...(b.elapsedMs === undefined ? {} : { elapsedMs: b.elapsedMs }),
+      diagnostics: b.diagnostics.map((d) => ({
+        kind: d.kind, file: d.file, line: d.line, col: d.col, message: d.message,
+      })),
+      ...(b.failureCause === undefined ? {} : { failureCause: b.failureCause }),
+    };
   }
   /** Called once per settled state change (the sidebar re-sends its state). */
   setSettledHandler(handler: (state: BuildPanelState) => void): void {
     this.onSettled = handler;
   }
   private post(msg: unknown): void {
-    if (this.postTarget !== undefined) {
-      void this.postTarget.postMessage(msg);
+    for (const target of this.targets) {
+      void target.postMessage(msg);
     }
   }
   /**
@@ -2466,6 +2498,18 @@ class SidebarProvider implements vscode.WebviewViewProvider {
         }
         this.pushState();
         return;
+    }
+  }
+  /**
+   * Messages from the editor-area build tab. Same two actions as the
+   * sidebar's build section, one choke point.
+   */
+  async onBuildTabMessage(raw: unknown): Promise<void> {
+    const kind = parseBuildPanelMessage(raw);
+    if (kind === "build-run") {
+      await this.deps.doBuild();
+    } else if (kind === "build-flash") {
+      await this.deps.doBuildFlash();
     }
   }
   private currentElf(): string {
@@ -2914,12 +2958,41 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     });
   };
+  let buildWebviewPanel: vscode.WebviewPanel | undefined;
+  const openBuildPanel = (): void => {
+    if (buildWebviewPanel !== undefined) {
+      buildWebviewPanel.reveal(vscode.ViewColumn.Beside, true);
+      return;
+    }
+    const panel = vscode.window.createWebviewPanel(
+      BUILD_PANEL_VIEW_TYPE,
+      BUILD_PANEL_TITLE,
+      { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
+      { enableScripts: true, enableCommandUris: true, retainContextWhenHidden: true },
+    );
+    buildWebviewPanel = panel;
+    mountBuildPanel(panel.webview, { state: buildPanel.snapshot() });
+    buildPanel.setPostTarget(panel.webview);
+    panel.webview.onDidReceiveMessage((raw: unknown) => {
+      void sidebar.onBuildTabMessage(raw);
+    });
+    panel.onDidDispose(() => {
+      unmountBuildPanel(panel.webview);
+      buildPanel.removePostTarget(panel.webview);
+      if (buildWebviewPanel === panel) {
+        buildWebviewPanel = undefined;
+      }
+    });
+  };
   for (const cmd of [
-    "stm32ext.showProject", "stm32ext.showBuild", "stm32ext.showFlash",
+    "stm32ext.showProject", "stm32ext.showFlash",
     "stm32ext.showLog",
   ]) {
     context.subscriptions.push(vscode.commands.registerCommand(cmd, () => { void openSidebar(); }));
   }
+  context.subscriptions.push(
+    vscode.commands.registerCommand("stm32ext.showBuild", () => { openBuildPanel(); }),
+  );
   context.subscriptions.push(
     vscode.commands.registerCommand("stm32ext.showLive", () => { openVariablePanel(); }),
   );
