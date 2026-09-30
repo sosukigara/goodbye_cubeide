@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, beforeAll, afterAll } from "vitest";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   discoverProjects,
   getSelectedDir,
@@ -7,9 +10,24 @@ import {
 } from "../src/project/discover.js";
 import { renderSidebar, SIDEBAR_PANEL_DEFAULT_STATE } from "../src/panels/sidebar.js";
 
-const FW_MAIN = "/home/so/robocon_ubuntu/NHK2026/nhk-2026-b-ros-android-controller/main";
+// Hermetic stand-in for the developer's firmware checkout: container mode
+// needs sibling dirs with .cproject plus one .ioc-only dir that must not
+// count as a project.
+let FW_MAIN = "";
+beforeAll(() => {
+  FW_MAIN = mkdtempSync(join(tmpdir(), "stm32ext-fwmain-"));
+  for (const name of ["unit_omni3", "unit_pc-stm"]) {
+    mkdirSync(join(FW_MAIN, name), { recursive: true });
+    writeFileSync(join(FW_MAIN, name, ".cproject"), "");
+  }
+  mkdirSync(join(FW_MAIN, "pid_tuner_stm_bridge"), { recursive: true });
+  writeFileSync(join(FW_MAIN, "pid_tuner_stm_bridge", "bridge.ioc"), "");
+});
+afterAll(() => {
+  rmSync(FW_MAIN, { recursive: true, force: true });
+});
 
-describe("multi-project discovery (read-only FW tree)", () => {
+describe("multi-project discovery (hermetic temp fixture)", () => {
   it("finds all container projects under main/", () => {
     const found = discoverProjects(FW_MAIN);
     const names = found.map((p) => p.name);

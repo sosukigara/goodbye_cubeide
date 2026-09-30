@@ -1,6 +1,7 @@
 // todo4: dry-run unit tests — generated command must match
 // `-c port=SWD -w <.elf> -v -rst` shape; confirm/progress/verify wired.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { stubCliOnPath } from "./helpers/stub-cli.js";
 import {
   CLI_INSTALL_GUIDE,
   DEFAULT_FLASH_SETTINGS,
@@ -54,6 +55,16 @@ describe("flash command shape (dry-run)", () => {
 });
 
 describe("flash safety rails", () => {
+  // runFlash resolves STM32_Programmer_CLI on PATH before the injected spawn
+  // mock; the stub satisfies only the existence check, calls go to the mock.
+  let restorePath: (() => void) | undefined;
+  beforeEach(() => {
+    restorePath = stubCliOnPath("STM32_Programmer_CLI");
+  });
+  afterEach(() => {
+    restorePath?.();
+    restorePath = undefined;
+  });
   it("confirmless write is refused", async () => {
     const res = await runFlash(DEFAULT_FLASH_SETTINGS, { elfPath: ELF, confirmed: false });
     expect(res.ok).toBe(false);

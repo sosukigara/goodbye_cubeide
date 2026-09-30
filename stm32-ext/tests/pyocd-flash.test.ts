@@ -1,9 +1,10 @@
 // pyOCD flash transport: argv shape, the same safety rails as the
 // CubeProgrammer path (confirmless refused, verify+reset implicit, one retry).
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { stubCliOnPath } from "./helpers/stub-cli.js";
 import { DEFAULT_FLASH_SETTINGS, type FlashSettings } from "../src/flash/backend.js";
 import {
   buildPyocdArgs,
@@ -53,6 +54,18 @@ describe("pyocd flash command shape", () => {
 });
 
 describe("pyocd flash safety rails", () => {
+  // runPyocdFlash resolves `pyocd` on PATH before consulting the injected
+  // spawn mock, so without a stub these tests see the not-found gate instead
+  // of their mocks. The stub is an empty executable: it only satisfies the
+  // existence check, every call still goes through the mock.
+  let restorePath: (() => void) | undefined;
+  beforeEach(() => {
+    restorePath = stubCliOnPath("pyocd");
+  });
+  afterEach(() => {
+    restorePath?.();
+    restorePath = undefined;
+  });
   it("refuses a confirmless flash", async () => {
     const res = await runPyocdFlash(MCU, DEFAULT_FLASH_SETTINGS, { elfPath: ELF, confirmed: false });
     expect(res.ok).toBe(false);

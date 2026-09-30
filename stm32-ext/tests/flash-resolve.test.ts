@@ -1,4 +1,5 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, beforeEach, afterEach } from "vitest";
+import { stubCliOnPath } from "./helpers/stub-cli.js";
 import {
   DEFAULT_FLASH_SETTINGS,
   describeElf,
@@ -7,6 +8,17 @@ import {
 } from "../src/flash/backend.js";
 
 describe("CLI auto-detect + verbose details", () => {
+  // runFlash resolves STM32_Programmer_CLI on PATH before the injected spawn
+  // mock; the stub satisfies only the existence check, calls go to the mock.
+  // The NO_SUCH_CLI_XYZ test is unaffected (that name is never on PATH).
+  let restorePath: (() => void) | undefined;
+  beforeEach(() => {
+    restorePath = stubCliOnPath("STM32_Programmer_CLI");
+  });
+  afterEach(() => {
+    restorePath?.();
+    restorePath = undefined;
+  });
   it("resolveCliPath reports searched paths and a verdict", () => {
     const r = resolveCliPath("STM32_Programmer_CLI");
     expect(r.searched.length).toBeGreaterThan(0);
