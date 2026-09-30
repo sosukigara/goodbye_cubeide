@@ -1,0 +1,6 @@
+#!/bin/sh
+# Auto-install the extension into VSCode after every commit.
+# Enabled via: git config core.hooksPath .githooks (repo root)
+set -eu
+cd "$(git rev-parse --show-toplevel)/stm32-ext"
+npm run install:local --silent
