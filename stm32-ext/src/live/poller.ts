@@ -153,6 +153,12 @@ export function decodeValue(hex: string, meta: LeafMeta | undefined): string {
       const buf = new ArrayBuffer(memory.length);
       new Uint8Array(buf).set(memory);
       const view = new DataView(buf);
+      // Only 4/8-byte widths are IEEE-754 decodable here: a shorter buffer
+      // makes getFloat32 throw (RangeError escapes into the sample path),
+      // and a longer one would decode a wrong number from its first 4 bytes.
+      if (memory.length !== 4 && memory.length !== 8) {
+        return `0x${digits} (型不明)`;
+      }
       const n = memory.length === 8 ? view.getFloat64(0, true) : view.getFloat32(0, true);
       return Number.isFinite(n) ? n.toPrecision(6) : String(hex);
     }

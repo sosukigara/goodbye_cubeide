@@ -530,7 +530,7 @@ const GRAPH_SCRIPT = `var __SEED = __GRAPH_SEED__;`
   // from the same list, so "empty" can only mean "the host has none left"
   // (e.g. the last series was removed from the sidebar). Ignoring it would
   // leave a line on screen that the user just deleted.
-  + ` const keep = {};`
+  + ` const keep = Object.create(null);`
   + ` for (let i = 0; i < arr.length; i += 1) {`
   + `  const d = arr[i];`
   + `  if (!d || typeof d.name !== 'string' || d.name === '') continue;`

@@ -785,6 +785,19 @@ describe("graph panel controls", () => {
     expect(p.legendNames()).toEqual(["nav.error"]);
   });
 
+  it("drops a prototype-named series the host stopped publishing", () => {
+    // `keep` was a plain {} so `keep["toString"]` read Object.prototype and
+    // stayed truthy after the host deleted the series: a ghost row the user
+    // could never remove. `toString` is a legal C global name.
+    const p = boot(["toString", "sys.loop_hz"]);
+    p.post({ kind: "graph-series", series: [{ name: "toString" }, { name: "sys.loop_hz" }] });
+    p.flush();
+    expect(p.legendNames()).toEqual(["toString", "sys.loop_hz"]);
+    p.post({ kind: "graph-series", series: [{ name: "sys.loop_hz" }] });
+    p.flush();
+    expect(p.legendNames()).toEqual(["sys.loop_hz"]);
+  });
+
   it("switches the time window and prunes to it", () => {
     const p = boot(["sys.loop_hz"]);
     p.post({ kind: "live-types", tree: { name: "debug" }, index: { "sys.loop_hz": LEAF() } });

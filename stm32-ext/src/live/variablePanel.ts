@@ -399,7 +399,7 @@ const VAR_SCRIPT = `var __SEED = __VAR_SEED__;`
   + ` }`
   + ` const targets = resolveVarInput(name).filter((t) => V.watched[t]);`
   + ` if (targets.length === 0) { fail('未登録の変数: ' + name); return; }`
-  + ` const drop = {};`
+  + ` const drop = Object.create(null);`
   + ` for (let i = 0; i < targets.length; i += 1) {`
   + `  delete V.watched[targets[i]];`
   + `  drop[targets[i]] = true;`

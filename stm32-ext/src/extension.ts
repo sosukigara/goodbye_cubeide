@@ -451,6 +451,8 @@ export class LivePanelProvider {
   private tailTimer: NodeJS.Timeout | undefined;
   /** True after an intentional stop: suppresses the abnormal-exit auto-restart. */
   private stopped = false;
+  /** Start-session generation: stop() bumps it so an in-flight startSession() aborts instead of spawning over the stop. */
+  private sessionGen = 0;
   /** Display paused (panel button): session keeps polling, rows stop updating. */
   private paused = false;
   private csvPath = "";
@@ -612,10 +614,19 @@ export class LivePanelProvider {
   removeTypeTarget(target: vscode.Webview): void {
     this.typeTargets.delete(target);
   }
+  /** Detach a superseded sidebar webview (registered in SidebarProvider.resolveWebviewView). */
+  removePostTarget(target: vscode.Webview): void {
+    if (this.postTarget === target) {
+      delete this.postTarget;
+    }
+  }
   sendTypesTo(target: vscode.Webview): void {
     const res = this.resolution;
     if (res !== undefined) {
-      const index: Record<string, LeafMeta> = {};
+      // Null-prototype: a C symbol is legally named `__proto__`, and on a
+      // `{}` literal that assignment mutates the prototype instead of adding
+      // an own key, so JSON.stringify silently drops the leaf.
+      const index: Record<string, LeafMeta> = Object.create(null);
       for (const [name, meta] of this.leafMeta) {
         index[name] = meta;
       }
@@ -654,7 +665,7 @@ export class LivePanelProvider {
     this.catalogRoots = roots;
     this.mcu = mcu;
     void this.storage?.update(LIVE_ELF_KEY, { elfPath: res.elf, mcu });
-    const index: Record<string, LeafMeta> = {};
+    const index: Record<string, LeafMeta> = Object.create(null);
     this.leafMeta = new Map();
     for (const s of res.symbols) {
       const meta: LeafMeta = {
@@ -684,6 +695,9 @@ export class LivePanelProvider {
   }
   async stop(): Promise<void> {
     this.stopped = true;
+    // Invalidate any startSession() still awaiting: it must abort instead of
+    // spawning a child over this stop (house style: rebuildGen in variablePanel.ts).
+    this.sessionGen += 1;
     this.pendingWrites.abandon("live session stopped before the write completed");
     if (this.tailTimer !== undefined) {
       clearInterval(this.tailTimer);
@@ -899,6 +913,17 @@ export class LivePanelProvider {
     // Intentional-stop flag consumed: a fresh session is running, so
     // subsequent abnormal exits must auto-restart again.
     this.stopped = false;
+    // A stale display pause must not survive a session boundary: pause only
+    // froze the table (`!this.paused` in the tail path), so without this a
+    // pause → stop → start left the new session frozen while status said
+    // "running". Reset here, not in stop(): stop() is also the internal
+    // kill-and-wait behind spawnPoll's auto-restart, where the session
+    // logically continues and the pause should persist.
+    this.paused = false;
+    // A stop() issued while this start is in flight bumps sessionGen; every
+    // await below re-checks it and aborts so the stopped session is not
+    // spawned over (this method is fired as `void`, never awaited).
+    const gen = this.sessionGen;
     if (this.resolution === undefined || !this.scriptsDir) {
       this.postStatus("idle", "ELF 未解決 — 先にビルドしてください");
       return;
@@ -938,11 +963,17 @@ export class LivePanelProvider {
       this.postStatus("error", "プローブ競合のため開始しませんでした", PROBE_BUSY_MESSAGE);
       return;
     }
+    if (gen !== this.sessionGen) {
+      return;
+    }
     const names = this.watchNames();
     // P0-1: nmLookup used to be `(name) => undefined`, so every user-added
     // variable was "unresolved" and never polled once. Resolve the ones the
     // type tree does not know against the built ELF's symbol table.
     const nmAddrs = await this.nmResolveAll(names, res.elf);
+    if (gen !== this.sessionGen) {
+      return;
+    }
     const { extras, unresolved } = resolveWatchlist(names, res, (n) => nmAddrs.get(n));
     // D11: the sidecar polls symbols[] verbatim, so only the watched leaves
     // go into the file. --all-members resolves 355 leaves; polling them all
@@ -1004,6 +1035,9 @@ export class LivePanelProvider {
       this.postStatus("error", "別のセッションがプローブを使用中です", PROBE_BUSY_MESSAGE);
       return;
     }
+    if (gen !== this.sessionGen) {
+      return;
+    }
     const args = [join(this.scriptsDir, "live_poll.py"),
       "--resolution", this.resJsonPath, "--out", this.csvPath,
       "--hz", String(hz),
@@ -1013,6 +1047,9 @@ export class LivePanelProvider {
       "--seconds", "2147483647",
       "--target", targetOfMcu(this.mcu), ...extraArgs(mergedExtras)];
     this.slog(`start: python3 ${args.join(" ")} (leaves=${inWindow.length} extras=${mergedExtras.length})`);
+    if (gen !== this.sessionGen) {
+      return;
+    }
     await this.spawnPoll(args);
   }
   private async spawnPoll(args: string[]): Promise<void> {
@@ -1440,7 +1477,7 @@ export class LivePanelProvider {
    */
   replayTo(target: vscode.Webview): void {
     if (this.resolution !== undefined) {
-      const index: Record<string, LeafMeta> = {};
+      const index: Record<string, LeafMeta> = Object.create(null);
       for (const [name, meta] of this.leafMeta) {
         index[name] = meta;
       }
@@ -1823,6 +1860,12 @@ export class GraphPanelProvider {
   setSidebarTarget(webview: vscode.Webview): void {
     this.sidebarTarget = webview;
     this.publishSeries();
+  }
+  /** Detach a superseded sidebar webview (registered in SidebarProvider.resolveWebviewView). */
+  removeSidebarTarget(webview: vscode.Webview): void {
+    if (this.sidebarTarget === webview) {
+      this.sidebarTarget = undefined;
+    }
   }
 }
 
@@ -2406,6 +2449,14 @@ class SidebarProvider implements vscode.WebviewViewProvider {
     view.webview.options = { enableScripts: true, enableCommandUris: true };
     this.deps.livePanel.setPostTarget(view.webview);
     this.deps.buildPanel.setPostTarget(view.webview);
+    // Every re-resolve hands over a NEW webview: without this the build
+    // panel's target Set (and the single-slot live/graph targets) keeps
+    // posting to dead views. WebviewView fires onDidDispose on replace.
+    view.onDidDispose(() => {
+      this.deps.buildPanel.removePostTarget(view.webview);
+      this.deps.livePanel.removePostTarget(view.webview);
+      this.deps.graphPanel.removeSidebarTarget(view.webview);
+    });
     this.deps.buildPanel.setSettledHandler(() => { this.pushState(); });
     this.deps.livePanel.setLogSink((line) => { this.appendLog(line); });
     this.deps.graphPanel.setSidebarTarget(view.webview);
