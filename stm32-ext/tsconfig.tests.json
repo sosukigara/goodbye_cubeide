@@ -1,0 +1,37 @@
+{
+  // Typecheck gate for tests. Extends the base config so tests are held to
+  // the same strictness as src; differences are runtime truth, not leniency:
+  //  - rootDir/noEmit: tests live outside src, and this project never emits
+  //    (base rootDir/outDir semantics for `compile` are untouched).
+  //  - module/moduleResolution ESM: tests execute under vitest (vite ESM
+  //    transform), never as Node16 CJS, so import.meta is legal here.
+  //  - types: exactly the @types set the base project auto-includes.
+  // ponytail: sibling test files with pre-existing type drift are excluded
+  // until their owning lanes clear them (census: 2026-09-30, see
+  // .omo/evidence/stm32-cli/task-11.vitest.log). Remove entries as lanes
+  // fix their files; do NOT relax strictness to absorb them.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": ".",
+    "noEmit": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "types": ["node", "vscode"]
+  },
+  "include": ["src", "tests"],
+  "exclude": [
+    "node_modules",
+    "out",
+    "tests/graph-panel.test.ts",
+    "tests/variable-panel.test.ts",
+    "tests/sidebar-ui.test.ts",
+    "tests/cli-setup.test.ts",
+    "tests/live-manager.test.ts",
+    "tests/cli-policy.test.ts",
+    "tests/audit-round1-sidebar.test.ts",
+    "tests/graph-watch.test.ts",
+    "tests/env-setup.test.ts",
+    "tests/pick-items.test.ts",
+    "tests/flash.test.ts"
+  ]
+}

@@ -10,17 +10,20 @@ import {
 
 describe("write request framing", () => {
   it("carries id, address, size and the value verbatim", () => {
-    const line = buildWriteRequest("w1", "0x200000bc", 4, "1287");
+    const line = buildWriteRequest("w1", "0x200000bc", 4, "1287", "0x200000bc", 4);
     expect(JSON.parse(line)).toEqual({
       id: "w1", op: "write", address: "0x200000bc", size: 4, value: "1287",
+      base: "0x200000bc", symbolSize: 4,
     });
   });
   it("sends a hex value through untouched for the sidecar to parse", () => {
-    expect(JSON.parse(buildWriteRequest("w1", "0x200000bc", 4, "0xFF"))
-      .value).toBe("0xFF");
+    const parsed = JSON.parse(buildWriteRequest("w1", "0x200000bc", 4, "0xFF", "0x200000bc", 4));
+    expect(parsed.value).toBe("0xFF");
+    expect(parsed.base).toBe("0x200000bc");
+    expect(parsed.symbolSize).toBe(4);
   });
   it("is exactly one line (the sidecar reads stdin line by line)", () => {
-    expect(buildWriteRequest("w1", "0x200000bc", 4, "1")).not.toContain("\n");
+    expect(buildWriteRequest("w1", "0x200000bc", 4, "1", "0x200000bc", 4)).not.toContain("\n");
   });
 });
 

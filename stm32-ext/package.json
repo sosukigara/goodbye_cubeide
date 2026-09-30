@@ -57,9 +57,10 @@
   "scripts": {
     "compile": "tsc -p ./",
     "typecheck": "tsc --noEmit",
+    "typecheck:tests": "tsc -p tsconfig.tests.json --noEmit",
     "test": "vitest run",
     "test:py": "python3 -c \"import pytest\" >/dev/null 2>&1 || { echo \"SKIP: pytest not installed (pip install pytest)\"; exit 0; }; PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest tests/ -q",
-    "verify": "npm run typecheck && npm run test && npm run test:py && npm run compile",
+    "verify": "npm run typecheck && npm run typecheck:tests && npm run test && npm run test:py && npm run compile",
     "package": "npm run compile && vsce package --no-yarn",
     "install:local": "npm run package && code --force --install-extension \"./$(ls -t stm32-ext-*.vsix | head -n 1)\"",
     "gen:ninja": "node out/build/cli.js",
