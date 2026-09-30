@@ -58,6 +58,7 @@ import {
   DEFAULT_EXTRA_SIZE,
   EXIT_NO_SYMBOLS,
   exitCodeReason,
+  expandWatchNames,
   extraArgs,
   filterWatchedSymbols,
   hasWindow,
@@ -1246,14 +1247,18 @@ export class LivePanelProvider {
     if (incoming.length === 0) {
       return;
     }
+    const expanded = this.resolution === undefined
+      ? incoming
+      : expandWatchNames(this.resolution, incoming);
     const current = this.watchNames();
-    const merged = [...current, ...incoming.filter((n) => !current.includes(n))];
+    const merged = [...current, ...expanded.filter((n) => !current.includes(n))];
     if (merged.length === current.length) {
       this.slog(`watchlist: ${incoming.join(",")} は監視済み (${current.length} 個 unchanged)`);
       return;
     }
     await this.storage?.update(WATCHLIST_KEY, merged);
-    this.slog(`watchlist: +${incoming.join(",")} (${current.length} -> ${merged.length})`);
+    const fresh = merged.slice(current.length);
+    this.slog(`watchlist: +${incoming.join(",")} (${current.length} -> ${merged.length})${fresh.length > 0 ? ` [${fresh.join(",")}]` : ""}`);
     this.post({ kind: "live-watchlist", names: merged });
     await this.restart();
   }
@@ -1294,7 +1299,19 @@ export class LivePanelProvider {
 
   private async addWatchFlowInner(): Promise<void> {
     if (this.resolution === undefined) {
-      this.drop("no ELF yet — build first");
+      // Offline path: no ELF resolution yet (never built, or reloaded window).
+      // The probe is irrelevant here — names are just saved to the watchlist
+      // and resolved at session start — so fall back to direct input instead
+      // of refusing. This is what makes 変数追加 work with no ST-LINK.
+      const free = await vscode.window.showInputBox({
+        prompt: "変数名 (カンマ区切り可。型ツリー未受信のため直接入力)",
+        placeHolder: "sys.loop_hz, tuner_params, my_counter",
+      });
+      if (free === undefined || !free.trim()) {
+        this.slog("add-watch: dismissed with no ELF resolution and no names");
+        return;
+      }
+      await this.addNames(free);
       return;
     }
     const res = this.resolution;
