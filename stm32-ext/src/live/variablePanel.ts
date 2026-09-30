@@ -219,14 +219,14 @@ const VAR_SCRIPT = `var __SEED = __VAR_SEED__;`
   + `function isNoise(n) {`
   + ` return npIsNoise(n);`
   + `}`
-  + `function childLeaves(name) {`
-  + ` const out = [];`
-  + ` const keys = Array.from(V.types.keys());`
+  + `let groupLeafCount = Object.create(null);`
+  + `function rebuildGroupCounts(keys) {`
+  + ` const counts = Object.create(null);`
   + ` for (let i = 0; i < keys.length; i += 1) {`
-  + `  const k = keys[i];`
-  + `  if (k !== name && !isNoise(k) && npIsUnder(k, name)) out.push(k);`
+  + `  const ancs = npAncestorsOf(keys[i]);`
+  + `  for (let k = 0; k < ancs.length; k += 1) counts[ancs[k]] = (counts[ancs[k]] || 0) + 1;`
   + ` }`
-  + ` return out;`
+  + ` groupLeafCount = counts;`
   + `}`
   + `let rebuildGen = 0;`
   + `function rebuild() {`
@@ -234,9 +234,10 @@ const VAR_SCRIPT = `var __SEED = __VAR_SEED__;`
   + ` const gen = rebuildGen;`
   + ` if (!tbody) return;`
   + ` tbody.textContent = '';`
+  + ` const leafKeys = Array.from(V.types.keys()).filter((k) => !isNoise(k));`
+  + ` rebuildGroupCounts(leafKeys);`
   + ` for (let i = 0; i < V.order.length; i += 1) tbody.appendChild(mkRow(V.order[i]));`
   + ` paintAll();`
-  + ` const leafKeys = Array.from(V.types.keys()).filter((k) => !isNoise(k));`
   + ` const rest = npCandidates(leafKeys).filter((n) => !V.watched[n]);`
   + ` appendRowsChunked(rest, 0, gen);`
   + `}`
@@ -252,8 +253,8 @@ const VAR_SCRIPT = `var __SEED = __VAR_SEED__;`
   + ` paintAll();`
   + `}`
   + `function mkRow(name) {`
-  + ` const kids = childLeaves(name);`
-  + ` if (kids.length > 0) return mkGroupRow(name, kids);`
+  + ` const kids = groupLeafCount[name] || 0;`
+  + ` if (kids > 0) return mkGroupRow(name, kids);`
   + ` const tr = mk('tr');`
   + ` tr.setAttribute('data-name', name);`
   + ` tr.setAttribute('data-watched', V.watched[name] ? '1' : '0');`
@@ -279,21 +280,21 @@ const VAR_SCRIPT = `var __SEED = __VAR_SEED__;`
   + ` tr.appendChild(n); tr.appendChild(v); tr.appendChild(w); tr.appendChild(o);`
   + ` return tr;`
   + `}`
-  + `function mkGroupRow(name, kids) {`
+  + `function mkGroupRow(name, count) {`
   + ` const tr = mk('tr');`
   + ` tr.setAttribute('data-name', name);`
   + ` tr.setAttribute('data-group', '1');`
-  + ` tr.setAttribute('data-count', String(kids.length));`
+  + ` tr.setAttribute('data-count', String(count));`
   + ` tr.setAttribute('data-watched', V.watched[name] ? '1' : '0');`
-  + ` const n = mk('td'); n.className = 'n'; n.textContent = name + ' (' + kids.length + '件)';`
+  + ` const n = mk('td'); n.className = 'n'; n.textContent = name + ' (' + count + '件)';`
   + ` n.title = name + ' — クリックで配下に絞り込み表示';`
   + ` n.addEventListener('click', () => { if (search) { search.value = name; } V.query = name; paintAll(); });`
-  + ` const v = mk('td'); v.className = 'v'; v.textContent = kids.length + '件';`
+  + ` const v = mk('td'); v.className = 'v'; v.textContent = count + '件';`
   + ` v.title = name + ' 配下の変数 (クリックで絞り込み)';`
   + ` const w = mk('td'); w.className = 'w';`
   + ` w.textContent = '—';`
   + ` const o = mk('td'); o.className = 'o';`
-  + ` const add = mk('button'); add.textContent = '+'; add.title = name + ' 配下' + kids.length + '件を監視に追加';`
+  + ` const add = mk('button'); add.textContent = '+'; add.title = name + ' 配下' + count + '件を監視に追加';`
   + ` add.addEventListener('click', () => addName(name));`
   + ` const del = mk('button'); del.textContent = 'x'; del.title = name + ' 配下を監視から除外';`
   + ` del.addEventListener('click', () => removeName(name));`
