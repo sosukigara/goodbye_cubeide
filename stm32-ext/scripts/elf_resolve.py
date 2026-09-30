@@ -986,8 +986,12 @@ def resolve(elf, prefix="arm-none-eabi-", struct_name=STRUCT_NAME,
     tree, leaves = (None, [])
     if model is not None:
         tree, leaves = build_tree(model, base)
-    if not size and tree is not None:
-        size = tree["size"]
+    if tree is not None:
+        # symtab 'debug' size can be smaller than the DWARF tree span
+        # (observed: base 0x20000100 size 0x250=592B vs leaf at 0x20002957
+        # ~10KB away). Take the max so valid leaves are not clipped; base
+        # stays from symtab.
+        size = max(int(size or 0), int(tree.get("size") or 0))
     return {
         "elf": elf,
         "base": f"0x{base:08x}",

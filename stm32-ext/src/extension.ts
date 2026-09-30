@@ -65,6 +65,7 @@ import {
   isProbeBusyOutput,
   parseNmSymbol,
   parseNmSymbolSize,
+  partitionOutOfWindowSymbols,
   readNewSamples,
   readSessionLock,
   resolveWatchlist,
@@ -76,6 +77,14 @@ import {
 import { mergeSuggestions, scanSourceVars } from "./live/varscan";
 import { CUBEIDE_RUNNING_MESSAGE, detectConflicts, findOwnPollPids, listProcesses } from "./probe/conflict";
 import { GRAPH_PANEL_TITLE, GRAPH_PANEL_VIEW_TYPE, graphPanelHtml, parseGraphPanelMessage } from "./live/graphPanel";
+import {
+  VARIABLE_PANEL_TITLE,
+  VARIABLE_PANEL_VIEW_TYPE,
+  mount as mountVariablePanel,
+  parseVariablePanelMessage,
+  pushVariableSamples,
+  unmount as unmountVariablePanel,
+} from "./live/variablePanel";
 import { WatchBatcher } from "./live/watchBatch";
 
 /**
@@ -523,6 +532,15 @@ export class LivePanelProvider {
     for (const target of this.postTargets()) {
       void target.postMessage(msg);
     }
+    // The editor-area variable tab is a decode-only type target for samples
+    // (those arrive through the sample sink), but the watchlist IS its
+    // membership: without this forward a tab opened before a sidebar add/remove
+    // keeps a stale table while the session polls the new list.
+    // The graph panel ignores unknown kinds, so the extra message is harmless.
+    if (typeof msg === "object" && msg !== null
+      && (msg as Record<string, unknown>)["kind"] === "live-watchlist") {
+      this.postToTypeTargets(msg);
+    }
   }
   /**
    * Every live surface, most recently attached first: the sidebar webview is
@@ -910,9 +928,19 @@ export class LivePanelProvider {
     }
     this.noSessionSig = "";
     this.noSessionUserSig = "";
-    this.slog(`watch leaves: ${filter.symbols.length} (of ${names.length} watched names)`);
+    const split = partitionOutOfWindowSymbols(filter.symbols, res.base, res.size);
+    const inWindow = split.inWindow;
+    const seenExtra = new Set(extras.map((e) => e.name));
+    const mergedExtras = [...extras];
+    for (const e of split.outOfWindowAsExtras) {
+      if (!seenExtra.has(e.name)) {
+        seenExtra.add(e.name);
+        mergedExtras.push(e);
+      }
+    }
+    this.slog(`watch leaves: ${inWindow.length} in-window + ${mergedExtras.length} extras (of ${names.length} watched names, unmatched ${allUnresolved.length})`);
     try {
-      writeFileSync(this.resJsonPath, buildResolutionJson(res, filter.symbols));
+      writeFileSync(this.resJsonPath, buildResolutionJson(res, inWindow));
     } catch (err) {
       this.slog(`cannot write ${this.resJsonPath}: ${err instanceof Error ? err.message : String(err)}`);
       this.postStatus("error", `解決 JSON を書けません: ${this.resJsonPath}`);
@@ -935,8 +963,8 @@ export class LivePanelProvider {
       // hour. The sidecar takes a duration, so ask for one that outlives any
       // session; the session ends when the user stops it, not on a clock.
       "--seconds", "2147483647",
-      "--target", targetOfMcu(this.mcu), ...extraArgs(extras)];
-    this.slog(`start: python3 ${args.join(" ")} (leaves=${filter.symbols.length} extras=${extras.length})`);
+      "--target", targetOfMcu(this.mcu), ...extraArgs(mergedExtras)];
+    this.slog(`start: python3 ${args.join(" ")} (leaves=${inWindow.length} extras=${mergedExtras.length})`);
     await this.spawnPoll(args);
   }
   private async spawnPoll(args: string[]): Promise<void> {
@@ -2714,7 +2742,7 @@ export function activate(context: vscode.ExtensionContext): void {
   // Single Live->Graph forwarding subscription (todo2): every sample batch
   // reaching the Live table is forwarded to the Graph panel exactly once.
   // The sink overwrites on assignment, so no duplicate subscription can exist.
-  livePanel.setSampleSink((samples) => { graphPanel.pushSamples(samples); });
+  livePanel.setSampleSink((samples) => { graphPanel.pushSamples(samples); pushVariableSamples(samples); });
   context.subscriptions.push(new vscode.Disposable(() => { void livePanel.stop(); }));
   const doBuild = (): Promise<string | undefined> =>
     buildProjectFlow(channel, buildPanel, buildDiags, livePanel, scriptsDir);
@@ -2823,13 +2851,60 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     });
   };
-  // The sidebar keeps Project/Build/Flash/Live/Log; Graph has its own panel.
+  // The sidebar keeps Project/Build/Flash/Log; Graph and Variables each have
+  // their own editor-area panel.
+  let variableWebviewPanel: vscode.WebviewPanel | undefined;
+  const openVariablePanel = (): void => {
+    if (variableWebviewPanel !== undefined) {
+      variableWebviewPanel.reveal(vscode.ViewColumn.Beside, true);
+      return;
+    }
+    const panel = vscode.window.createWebviewPanel(
+      VARIABLE_PANEL_VIEW_TYPE,
+      VARIABLE_PANEL_TITLE,
+      { viewColumn: vscode.ViewColumn.Beside, preserveFocus: true },
+      { enableScripts: true, enableCommandUris: true, retainContextWhenHidden: true },
+    );
+    variableWebviewPanel = panel;
+    // Sequence matters: mount (html) -> types (addTypeTarget seeds live-types,
+    // live-watchlist and the latest sample snapshot). No archive replay: the
+    // table shows latest values, not history, and addTypeTarget already seeds
+    // the latest snapshot, so there is nothing to replay.
+    mountVariablePanel(panel.webview);
+    livePanel.addTypeTarget(panel.webview);
+    panel.webview.onDidReceiveMessage((raw: unknown) => {
+      const msg = parseVariablePanelMessage(raw);
+      if (msg === null) {
+        return;
+      }
+      if (msg.kind === "var-add") {
+        watchBatcher.push(msg.name, true);
+      } else if (msg.kind === "var-remove") {
+        watchBatcher.push(msg.name, false);
+      } else {
+        void livePanel.handleLiveAction("write", msg.name, msg.value);
+      }
+    });
+    panel.onDidDispose(() => {
+      unmountVariablePanel(panel.webview);
+      livePanel.removeTypeTarget(panel.webview);
+      if (variableWebviewPanel === panel) {
+        variableWebviewPanel = undefined;
+      }
+    });
+  };
   for (const cmd of [
     "stm32ext.showProject", "stm32ext.showBuild", "stm32ext.showFlash",
-    "stm32ext.showLive", "stm32ext.showLog",
+    "stm32ext.showLog",
   ]) {
     context.subscriptions.push(vscode.commands.registerCommand(cmd, () => { void openSidebar(); }));
   }
+  context.subscriptions.push(
+    vscode.commands.registerCommand("stm32ext.showLive", () => { openVariablePanel(); }),
+  );
+  context.subscriptions.push(
+    vscode.commands.registerCommand("stm32ext.showVariables", () => { openVariablePanel(); }),
+  );
   context.subscriptions.push(
     vscode.commands.registerCommand("stm32ext.showGraph", () => { openGraphPanel(); }),
   );

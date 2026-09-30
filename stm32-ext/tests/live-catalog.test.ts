@@ -34,7 +34,9 @@ import { LivePanelProvider, parseCatalogRoots } from "../src/extension.js";
 import type { ElfResolution } from "../src/live/elfResolver.js";
 import {
   buildResolutionJson,
+  extraArgs,
   filterWatchedSymbols,
+  partitionOutOfWindowSymbols,
   resolveWatchlist,
 } from "../src/live/manager.js";
 import { findSymbol } from "../src/live/elfResolver.js";
@@ -107,6 +109,23 @@ function catalogResolution(): ElfResolution {
   } as ElfResolution;
 }
 
+// Resolution mixing an in-window DebugGlobal leaf with an out-of-window
+// catalog leaf (window [0x20000000,0x20000040); robot.* lives at 0x2000357c).
+function mixedResolution(): ElfResolution {
+  return {
+    elf: "build-ext/fw.elf",
+    base: "0x20000000",
+    size: 64,
+    end: "0x20000040",
+    hasDebugInfo: true,
+    backend: "pyelftools",
+    symbols: [
+      { name: "tuner.kp", address: "0x20000000", offset: 0, size: 4, type: "float", kind: "float", signed: true },
+      { name: "robot.physical_yaw", address: "0x2000357c", offset: 0, size: 8, type: "double", kind: "float", signed: true },
+    ],
+    unresolved: [],
+  } as ElfResolution;
+}
 const kinds = (posted: readonly unknown[]): string[] =>
   posted.map((m) => String((m as { kind?: string }).kind));
 
@@ -222,10 +241,31 @@ describe("a catalog path resolves through the existing watch and write pipeline"
     expect(findSymbol(catalogResolution(), "tuner.kp")?.size).toBe(4);
   });
 
-  it("resolveWatchlist needs no extra for a catalog path (already resolved)", () => {
-    const out = resolveWatchlist(["tuner.kp"], catalogResolution(), () => undefined);
+  it("an out-of-window catalog path becomes --extra via partition (not JSON symbols)", () => {
+    // Old expectation ("already resolved, no extra needed") was the bug:
+    // resolveWatchlist still sees the name as resolved, but the sidecar's
+    // load_watchlist range filter rejects out-of-window JSON symbols, so the
+    // host must reroute them to --extra (which bypasses the filter) with the
+    // real DWARF size.
+    const res = mixedResolution();
+    const watched = filterWatchedSymbols(res, ["robot.physical_yaw"]).symbols;
+    expect(watched.map((s) => s.name)).toEqual(["robot.physical_yaw"]);
+    const out = resolveWatchlist(["robot.physical_yaw"], res, () => undefined);
     expect(out.extras).toEqual([]);
     expect(out.unresolved).toEqual([]);
+    const split = partitionOutOfWindowSymbols(watched, res.base, res.size);
+    expect(split.inWindow).toEqual([]);
+    expect(split.outOfWindowAsExtras).toEqual([
+      { name: "robot.physical_yaw", address: "0x2000357c", size: 8 },
+    ]);
+  });
+
+  it("a pure DebugGlobal watchlist stays fully in-window (no behavior change)", () => {
+    const res = catalogResolution();
+    const watched = filterWatchedSymbols(res, ["tuner.kp", "debug"]).symbols;
+    const split = partitionOutOfWindowSymbols(watched, res.base, res.size);
+    expect(split.inWindow.map((s) => s.name)).toEqual(["tuner.kp", "debug"]);
+    expect(split.outOfWindowAsExtras).toEqual([]);
   });
 
   it("an unknown catalog-shaped path is reported, never dropped silently", () => {
@@ -238,11 +278,30 @@ describe("a catalog path resolves through the existing watch and write pipeline"
 });
 
 describe("the sidecar still receives only the watched subset", () => {
-  it("buildResolutionJson is handed the filter output, not the whole resolution", () => {
-    expect(extensionSource).toMatch(/buildResolutionJson\(res, filter\.symbols\)/);
+  it("buildResolutionJson is handed the in-window partition, not the whole resolution", () => {
+    expect(extensionSource).toMatch(/buildResolutionJson\(res, inWindow\)/);
     const res = catalogResolution();
     const watched = filterWatchedSymbols(res, ["tuner.kp"]).symbols;
-    const json = JSON.parse(buildResolutionJson(res, watched)) as { symbols: { name: string }[] };
+    const split = partitionOutOfWindowSymbols(watched, res.base, res.size);
+    const json = JSON.parse(buildResolutionJson(res, split.inWindow)) as { symbols: { name: string }[] };
     expect(json.symbols.map((s) => s.name)).toEqual(["tuner.kp"]);
+  });
+
+  it("resolution JSON + --extra together cover in-window and catalog paths", () => {
+    const res = mixedResolution();
+    const watched = filterWatchedSymbols(res, ["tuner.kp", "robot.physical_yaw"]).symbols;
+    const split = partitionOutOfWindowSymbols(watched, res.base, res.size);
+    const json = JSON.parse(buildResolutionJson(res, split.inWindow)) as {
+      symbols: { name: string }[];
+    };
+    expect(json.symbols.map((s) => s.name)).toEqual(["tuner.kp"]);
+    expect(extraArgs(split.outOfWindowAsExtras)).toEqual([
+      "--extra=robot.physical_yaw=0x2000357c:8",
+    ]);
+    const covered = [
+      ...json.symbols.map((s) => s.name),
+      ...split.outOfWindowAsExtras.map((e) => e.name),
+    ].sort();
+    expect(covered).toEqual(["robot.physical_yaw", "tuner.kp"]);
   });
 });

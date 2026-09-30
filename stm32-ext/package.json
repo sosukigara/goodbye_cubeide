@@ -43,6 +43,7 @@
     "onCommand:stm32ext.showBuild",
     "onCommand:stm32ext.showFlash",
     "onCommand:stm32ext.showLive",
+    "onCommand:stm32ext.showVariables",
     "onCommand:stm32ext.showGraph",
     "onCommand:stm32ext.showLog",
     "onCommand:stm32ext.flash",
@@ -80,6 +81,10 @@
       {
         "command": "stm32ext.showLive",
         "title": "STM32: 監視変数パネルを表示"
+      },
+      {
+        "command": "stm32ext.showVariables",
+        "title": "STM32: 変数パネルを開く"
       },
       {
         "command": "stm32ext.showGraph",

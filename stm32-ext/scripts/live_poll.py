@@ -566,8 +566,9 @@ def load_watchlist(resolution_path):
             continue
         if not base <= addr < end:
             skipped.append((name or "<unnamed>",
-                            f"address 0x{addr:08x} is outside the resolved DebugGlobal "
-                            f"window [0x{base:08x}, 0x{end:08x}); re-run "
+                            f"address 0x{addr:08x} (size {s.get('size')!r}) is outside "
+                            f"the resolved DebugGlobal window "
+                            f"[0x{base:08x}, 0x{end:08x}); the ELF looks stale — re-run "
                             f"scripts/elf_resolve.py against the current ELF"))
             continue
         entries.append(s)
@@ -575,10 +576,33 @@ def load_watchlist(resolution_path):
     return watch, skipped + more
 
 
-# Rows per CSV file before rotation (100k rows ~= 3min at 100Hz x 10 syms).
+# Floor for rows per CSV file before rotation. The live limit is dynamic (see
+# csv_rotation_limit): at 155 leaves x 100Hz the sidecar logs 15500 rows/s, so
+# this floor alone rotates every 100000/15500 ~= 6.45s — the reported log spam.
+# The dynamic limit keeps a ~120s window per run instead, capped at 5M rows.
 # Rotation keeps the workspace file watcher + tail cheap; the extension tail
 # already handles truncation (size < offset -> restart from top).
 CSV_MAX_ROWS = 100000
+
+# Hard cap on the dynamic rotation limit (rows per CSV generation).
+CSV_MAX_ROWS_CAP = 5_000_000
+
+# Seconds of watch data kept per CSV generation before rotation.
+CSV_WINDOW_S = 120
+
+
+def csv_rotation_limit(hz, n_leaves):
+    """Dynamic rotation limit: max(floor, hz * leaves * window), capped.
+
+    Keeps ~CSV_WINDOW_S seconds of rows per generation regardless of watch
+    size: 10 leaves @ 100Hz -> 120k rows (~120s), 155 leaves @ 100Hz ->
+    1.86M rows (~120s) instead of rotating every ~6.45s at the 100k floor.
+    """
+    try:
+        want = int(float(hz) * int(n_leaves) * CSV_WINDOW_S)
+    except (TypeError, ValueError):
+        want = CSV_MAX_ROWS
+    return min(max(CSV_MAX_ROWS, want), CSV_MAX_ROWS_CAP)
 
 
 def default_stamp():
@@ -652,6 +676,7 @@ def poll_loop(probe, watch, out_path, hz=10, seconds=300, clock=None, sleeper=No
         writer = csv.writer(f, lineterminator="\n")
         writer.writerow(CSV_HEADER)
         rows_in_file = 0
+        max_rows = csv_rotation_limit(hz, len(watch))
         # The host tails this file: the header has to be visible before the first tick.
         f.flush()
         while clock() < deadline:
@@ -691,13 +716,14 @@ def poll_loop(probe, watch, out_path, hz=10, seconds=300, clock=None, sleeper=No
                 writer.writerow([stamp(), w["address"], w["name"],
                                  format_value(value, w["size"])])
                 rows_in_file += 1
-            if rows_in_file >= CSV_MAX_ROWS:
+            if rows_in_file >= max_rows:
                 f.flush()
                 f.seek(0)
                 f.truncate()
                 writer.writerow(CSV_HEADER)
+                print(f"live_poll: CSV rotated at {rows_in_file} rows "
+                      f"({len(watch)} leaves @ {hz}Hz; limit {max_rows})")
                 rows_in_file = 0
-                print("live_poll: CSV rotated at 100k rows (watcher/tail stay cheap)")
             # Without this the rows sit in an 8KB buffer and the host sees them in bunches
             # of up to 145 rows / 145ms.
             f.flush()

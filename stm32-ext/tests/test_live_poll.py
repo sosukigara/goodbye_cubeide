@@ -434,6 +434,28 @@ def test_a_symbol_outside_the_resolved_window_is_reported_not_polled(tmp_path):
     got, skipped = live_poll.load_watchlist(res)
     assert [w["name"] for w in got] == ["in.range"]
     assert "outside" in dict(skipped)["stale.one"]
+    # The skip names the symbol size and hints the ELF is stale.
+    assert "stale" in dict(skipped)["stale.one"].lower()
+    assert "4" in dict(skipped)["stale.one"]
+
+
+def test_csv_rotation_limit_scales_with_hz_and_watch_length():
+    """155 leaves @ 100Hz log 15500 rows/s, so the 100k floor alone rotates
+    every ~6.45s. The dynamic limit keeps a ~120s window, capped at 5M."""
+    assert live_poll.CSV_MAX_ROWS == 100000  # floor constant, kept for tests
+    assert live_poll.csv_rotation_limit(100, 155) == 100 * 155 * 120
+    assert live_poll.csv_rotation_limit(100, 10) == max(100000, 100 * 10 * 120)
+    assert live_poll.csv_rotation_limit(10, 1) == 100000  # floor wins
+    assert live_poll.csv_rotation_limit(200, 10000) == 5_000_000  # cap wins
+
+
+def test_csv_does_not_rotate_every_few_seconds_at_155_leaves_100hz(capsys):
+    """With the old fixed 100k limit, 155 rows/tick @ 100Hz rotated after ~6.5
+    ticks; the dynamic limit must hold a full short run without rotating."""
+    entries = watch(*[(f"w.{i}", BASE + i * 4, 4) for i in range(155)])
+    probe = ByteProbe()
+    run(probe, entries, ticks=10, hz=100)
+    assert "rotated" not in capsys.readouterr().out
 
 
 def test_an_extra_without_a_size_is_refused_with_the_working_form(tmp_path, capsys):

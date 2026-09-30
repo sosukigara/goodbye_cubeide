@@ -283,6 +283,60 @@ function matchNmSymbol(
   return undefined;
 }
 
+/** Split of watched leaves against the DebugGlobal window. */
+export interface WindowPartition {
+  /** Leaves inside [base, base+size): safe for the resolution JSON. */
+  readonly inWindow: readonly ResolvedSymbol[];
+  /**
+   * Leaves outside the window (catalog globals such as robot.*): the
+   * sidecar's load_watchlist range filter would reject them from symbols[],
+   * so they travel as --extra (which bypasses the filter) with their real
+   * DWARF widths.
+   */
+  readonly outOfWindowAsExtras: readonly ExtraWatch[];
+}
+
+/**
+ * Partition watched leaves into in-window (resolution JSON) vs
+ * out-of-window (sidecar --extra).
+ *
+ * The sidecar only polls symbols[] entries inside [base, base+size) and
+ * skips the rest as "outside the resolved DebugGlobal window", while
+ * --extra entries bypass that range filter. Catalog leaves (robot.*,
+ * monitor_odom.*) carry real addresses outside the DebugGlobal window, so
+ * writing them into the JSON means they are never polled. Splitting them
+ * host-side keeps every watched name polled with its DWARF size.
+ */
+export function partitionOutOfWindowSymbols(
+  symbols: readonly ResolvedSymbol[],
+  baseHex: string,
+  size: number,
+): WindowPartition {
+  const base = Number.parseInt(baseHex, 16);
+  if (!Number.isSafeInteger(base) || !Number.isSafeInteger(size) || size <= 0) {
+    return { inWindow: symbols, outOfWindowAsExtras: [] };
+  }
+  const inWindow: ResolvedSymbol[] = [];
+  const outOfWindowAsExtras: ExtraWatch[] = [];
+  for (const s of symbols) {
+    const addr = Number.parseInt(s.address, 16);
+    if (!Number.isSafeInteger(addr)) {
+      // Unparseable address: leave it where the old path put it (JSON)
+      // rather than silently rerouting it.
+      inWindow.push(s);
+      continue;
+    }
+    if (addr >= base && addr < base + size) {
+      inWindow.push(s);
+    } else {
+      const width = Number.isSafeInteger(s.size) && (s.size as number) > 0
+        ? s.size
+        : DEFAULT_EXTRA_SIZE;
+      outOfWindowAsExtras.push({ name: s.name, address: s.address, size: width });
+    }
+  }
+  return { inWindow, outOfWindowAsExtras };
+}
 /** Merge stored watchlist names against a resolution: known extras with addresses. */
 export function resolveWatchlist(
   names: readonly string[],

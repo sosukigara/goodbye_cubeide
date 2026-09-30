@@ -129,7 +129,7 @@ function liveSection(s: SidebarState): string {
     + `<button data-testid="live-reconnect" title="プローブを取り直して再開">再接続</button> `
     + `<button data-testid="live-add-watch" title="QuickPick で変数を追加">変数追加</button> `
     + `<button data-testid="live-export-csv" title="監視履歴を CSV で保存">CSV</button>`
-    + `</div><p class="why" data-testid="live-why"></p>`
+    + `</div><a class="btn primary" data-testid="variable-open" role="button" href="command:stm32ext.showVariables">変数をタブで開く</a><p class="why" data-testid="live-why"></p>`
     // The host routes every user-facing failure reason through live-status
     // (text + optional detail). The pill is for the state word only, so a
     // reason can never be overwritten by it.
