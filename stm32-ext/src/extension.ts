@@ -534,11 +534,15 @@ export class LivePanelProvider {
     }
     // The editor-area variable tab is a decode-only type target for samples
     // (those arrive through the sample sink), but the watchlist IS its
-    // membership: without this forward a tab opened before a sidebar add/remove
-    // keeps a stale table while the session polls the new list.
-    // The graph panel ignores unknown kinds, so the extra message is harmless.
+    // membership and the write result IS its only per-row feedback: without
+    // this forward a tab opened before a sidebar add/remove keeps a stale
+    // table while the session polls the new list, and a write looks like
+    // nothing happened because the sidebar no longer renders a write-result
+    // box. The graph panel ignores unknown kinds, so the extra messages are
+    // harmless.
     if (typeof msg === "object" && msg !== null
-      && (msg as Record<string, unknown>)["kind"] === "live-watchlist") {
+      && ((msg as Record<string, unknown>)["kind"] === "live-watchlist"
+        || (msg as Record<string, unknown>)["kind"] === "live-write-result")) {
       this.postToTypeTargets(msg);
     }
   }

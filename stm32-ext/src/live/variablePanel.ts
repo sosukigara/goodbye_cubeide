@@ -4,9 +4,10 @@
 // decoded values, per-row write inputs, per-row add/remove.
 //
 // Host -> webview messages consumed (same shapes as the sidebar uses):
-//   live-sample     { samples: LiveSample[] }                  value updates
-//   live-types      { tree, index: Record<string, LeafMeta> }   type decoding
-//   live-watchlist  { names: string[] }                         authoritative set
+//   live-sample       { samples: LiveSample[] }                  value updates
+//   live-types        { tree, index: Record<string, LeafMeta> }   type decoding
+//   live-watchlist    { names: string[] }                         authoritative set
+//   live-write-result { name, ok, message }                       per-row write feedback
 // webview -> host messages produced (see parseVariablePanelMessage):
 //   var-add / var-remove   { name }              one message per leaf
 //   var-write              { name, value }       Enter in a row's write input
@@ -224,6 +225,32 @@ const VAR_SCRIPT = `var __SEED = __VAR_SEED__;`
   + ` vscode.postMessage({ kind: 'var-write', name: name, value: value });`
   + ` note(name + ' への書き込みを要求しました');`
   + `}`
+  // A write result marks only the row that asked: success clears that row's
+  // input, failure keeps the typed text so the user can correct it. The
+  // host text always lands in the note line. Every lookup is guarded: a
+  // missing row (watchlist moved on) must not throw the listener away.
+  + `function onWriteResult(m) {`
+  + ` const nm = (m && typeof m.name === 'string') ? m.name : '';`
+  + ` if (nm === '') return;`
+  + ` const ok = m.ok === true;`
+  + ` const msg = (m && typeof m.message === 'string') ? m.message : '';`
+  + ` note(msg);`
+  + ` const tr = rowFor(nm);`
+  + ` if (!tr) return;`
+  + ` const cells = tr.children;`
+  + ` if (!cells) return;`
+  + ` const wcell = cells[2];`
+  + ` if (wcell && wcell.children && wcell.children[0] && wcell.children[0].tagName === 'INPUT' && ok) { wcell.children[0].value = ''; }`
+  + ` const ocell = cells[3];`
+  + ` if (!ocell) return;`
+  + ` const kids = ocell.children;`
+  + ` if (kids) { for (let i = kids.length - 1; i >= 0; i -= 1) { const k = kids[i]; if (k && k.getAttribute && k.getAttribute('data-wmark') === '1') ocell.removeChild(k); } }`
+  + ` const mark = mk('span');`
+  + ` mark.setAttribute('data-wmark', '1');`
+  + ` mark.textContent = ok ? '✓' : '✗';`
+  + ` mark.title = msg;`
+  + ` ocell.appendChild(mark);`
+  + `}`
   + `function paintAll() {`
   + ` if (!tbody) return;`
   + ` const filt = V.query.trim().toLowerCase();`
@@ -265,6 +292,7 @@ const VAR_SCRIPT = `var __SEED = __VAR_SEED__;`
   + ` if (k === 'live-sample' && Array.isArray(m.samples)) onSamples(m.samples);`
   + ` else if (k === 'live-types') onTypes(m);`
   + ` else if (k === 'live-watchlist') onWatchlist(m);`
+  + ` else if (k === 'live-write-result') onWriteResult(m);`
   + `});`
   + `const addBtn = q('[data-testid="var-add"]');`
   + `if (addBtn) addBtn.addEventListener('click', () => addName(picker ? picker.value : ''));`

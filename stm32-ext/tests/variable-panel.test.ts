@@ -344,3 +344,67 @@ describe("variable panel live values", () => {
     expect(p.rowNames()).toEqual([]);
   });
 });
+
+function rowTr(p: Panel, name: string): StubEl {
+  const tr = p.el("var-rows").children.find((r) => r.getAttribute("data-name") === name);
+  if (tr === undefined) {
+    throw new Error(`missing row for ${name}`);
+  }
+  return tr;
+}
+
+function writeInputOf(p: Panel, name: string): StubEl {
+  const cell = rowTr(p, name).children[2];
+  if (cell === undefined || cell.children[0] === undefined) {
+    throw new Error(`missing write input for ${name}`);
+  }
+  return cell.children[0] as StubEl;
+}
+
+function markerOf(p: Panel, name: string): string | undefined {
+  const op = rowTr(p, name).children[3];
+  if (op === undefined) {
+    return undefined;
+  }
+  return op.children.find((c) => c.getAttribute("data-wmark") === "1")?.textContent;
+}
+
+describe("variable panel write feedback", () => {
+  it("Enter on a row write input emits exactly one var-write, not a picker add", () => {
+    const p = boot();
+    p.post(types({ "sys.loop_hz": LEAF() }));
+    p.post({ kind: "live-watchlist", names: ["sys.loop_hz"] });
+    p.post({ kind: "live-sample", samples: [sample("sys.loop_hz", "0x00000ea7", 0)] });
+    const inp = writeInputOf(p, "sys.loop_hz");
+    inp.value = "42";
+    inp.fire("keydown", { key: "Enter", stopPropagation: () => {}, preventDefault: () => {} });
+    expect(p.posted).toEqual([{ kind: "var-write", name: "sys.loop_hz", value: "42" }]);
+  });
+
+  it("live-write-result marks rows, shows the message, and clears only the successful input", () => {
+    const p = boot();
+    p.post(types({ "sys.loop_hz": LEAF(), "sys.uptime": LEAF() }));
+    p.post({ kind: "live-watchlist", names: ["sys.loop_hz", "sys.uptime"] });
+    p.post({
+      kind: "live-sample",
+      samples: [
+        sample("sys.loop_hz", "0x00000ea7", 0),
+        sample("sys.uptime", "0x0000002a", 0),
+      ],
+    });
+    writeInputOf(p, "sys.loop_hz").value = "42";
+    writeInputOf(p, "sys.uptime").value = "zz";
+    p.post({ kind: "live-write-result", name: "sys.loop_hz", ok: true, message: "sys.loop_hz = 42 (readback 42)" });
+    expect(p.el("var-note").textContent).toContain("sys.loop_hz = 42");
+    p.post({ kind: "live-write-result", name: "sys.uptime", ok: false, message: "書き込み拒否: bad value" });
+    expect(p.el("var-note").textContent).toContain("書き込み拒否");
+    // The two rows must differ: success vs failure markers.
+    expect(markerOf(p, "sys.loop_hz")).toBe("✓");
+    expect(markerOf(p, "sys.uptime")).toBe("✗");
+    expect(markerOf(p, "sys.uptime")).not.toBe(markerOf(p, "sys.loop_hz"));
+    // Only the successful row's input is cleared; the failed text stays
+    // so the user can correct it.
+    expect(writeInputOf(p, "sys.loop_hz").value).toBe("");
+    expect(writeInputOf(p, "sys.uptime").value).toBe("zz");
+  });
+});
