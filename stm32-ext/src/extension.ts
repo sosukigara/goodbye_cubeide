@@ -42,6 +42,7 @@ import {
 } from "./env/venv";
 import {
   assertCsvHeader,
+  coalesceSamples,
   dropStats,
   encodeWriteValue,
   formatCsv,
@@ -1090,16 +1091,12 @@ export class LivePanelProvider {
       this.postStatus("error", `監視が終了しました (${how}) — STM32 ログを確認してください`,
         "「再接続」で再開できます");
     });
-    // Display refresh scales with the sample rate (25..100ms): the panel
-    // must drain faster than the poller appends, otherwise updates bunch
-    // up and the table looks frozen between bursts. Each tick only reads
-    // appended bytes (O(delta)), so the shorter interval is cheap.
-    // Parsed from args (spawnPoll's signature stays stable for the
-    // auto-restart path, which reuses the same args).
-    const hzIdx = args.indexOf("--hz");
-    const hzArg = hzIdx >= 0 ? Number(args[hzIdx + 1]) : NaN;
-    const hz = Number.isFinite(hzArg) && hzArg > 0 ? hzArg : 100;
-    const tailMs = Math.min(100, Math.max(25, Math.round(1000 / hz)));
+    // Display refresh is fixed at 10fps (100ms): the sidecar still polls at
+    // pollHz and the CSV keeps every row, but a human cannot read 40 table
+    // rewrites/s and each postMessage fans out to 3 webviews. The old
+    // 25ms interval at 100Hz posted ~387 rows x 40/s; with coalescing below
+    // one tick carries at most N rows (one per watched name) x 10/s.
+    const tailMs = 100;
     this.tailTimer = setInterval(() => {
       void this.tailOnce();
     }, tailMs);
@@ -1373,13 +1370,14 @@ export class LivePanelProvider {
     return out;
   }
   pushSamples(samples: readonly LiveSample[]): void {
-    this.samples.push(...samples);
+    const view = coalesceSamples(samples);
+    this.samples.push(...view);
     if (this.samples.length > 5000) {
       this.samples.splice(0, this.samples.length - 5000);
     }
-    this.post({ kind: "live-sample", samples });
+    this.post({ kind: "live-sample", samples: view });
     // Forward the SAME batch reference to the Graph panel exactly once.
-    this.sampleSink?.(samples);
+    this.sampleSink?.(view);
   }
   /**
    * A webview that was hidden (or reloaded) starts with an empty document,
@@ -1686,8 +1684,12 @@ export class GraphPanelProvider {
     this.onDownloadCsv?.(this.archive.slice());
   }
   pushSamples(samples: readonly LiveSample[]): void {
+    if (samples.length === 0) {
+      return;
+    }
+    const wanted = new Set(this.selected);
     for (const s of samples) {
-      if (this.selected.includes(s.name)) {
+      if (wanted.has(s.name)) {
         this.archive.push(s);
       }
     }

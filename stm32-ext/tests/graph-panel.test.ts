@@ -663,8 +663,37 @@ describe("graph panel controls", () => {
     expect(p.el("graph-error").textContent).toBe("");
   });
 
-  it("reports an unknown name instead of ignoring it", () => {
+  it("clears every registered series with one 全削除 click", () => {
     const p = boot();
+    p.post({
+      kind: "live-types",
+      tree: { name: "debug" },
+      index: {
+        "drive.controller.up": LEAF({ size: 1, kind: "bool" }),
+        "drive.controller.down": LEAF({ size: 1, kind: "bool" }),
+        "sys.loop_hz": LEAF(),
+      },
+    });
+    p.el("graph-var-picker").value = "drive.controller";
+    p.el("graph-add").fire("click");
+    p.el("graph-var-picker").value = "sys.loop_hz";
+    p.el("graph-add").fire("click");
+    expect(p.legendNames()).toEqual([
+      "drive.controller.down",
+      "drive.controller.up",
+      "sys.loop_hz",
+    ]);
+    p.el("graph-clear").fire("click");
+    expect(p.legendNames()).toEqual([]);
+    expect(p.posted.slice(-3)).toEqual([
+      { kind: "graph-remove", name: "drive.controller.down" },
+      { kind: "graph-remove", name: "drive.controller.up" },
+      { kind: "graph-remove", name: "sys.loop_hz" },
+    ]);
+    expect(p.el("graph-error").textContent).toBe("");
+  });
+
+  it("reports an unknown name instead of ignoring it", () => {    const p = boot();
     p.post({ kind: "live-types", tree: { name: "debug" }, index: { "sys.loop_hz": LEAF() } });
     p.el("graph-var-picker").value = "sys.nope";
     p.el("graph-add").fire("click");

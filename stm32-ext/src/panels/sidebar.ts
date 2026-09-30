@@ -720,6 +720,7 @@ export const SIDEBAR_SCRIPT: string = [
   "const paintLeaf = (s) => {",
   "  if (!rows) { lastRaw.set(s.name, s.value); return; }",
   "  let tr = cache.get(s.name);",
+  "  if (tr && lastRaw.get(s.name) === s.value) return;",
   "  let fresh = false;",
   "  if (!tr) { tr = leafRow(s.name); cache.set(s.name, tr); rows.appendChild(tr); fresh = true; }",
   "  const c = tr.children;",
