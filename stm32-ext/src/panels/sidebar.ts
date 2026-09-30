@@ -845,7 +845,7 @@ export const SIDEBAR_SCRIPT: string = [
   "  gate('live-stop', on, '監視していません', 'live-why');",
   "  gate('live-pause-toggle', on, s === 'starting' ? '接続中です' : '監視していません', 'live-why');",
   "  gate('live-reconnect', !on, '監視中です', 'live-why');",
-  "  gate('live-add-watch', st.hasTree, '型ツリー未受信 (ビルドしてください)', 'live-why');",
+  "  gate('live-add-watch', true, '', 'live-why');",
   "  gate('live-export-csv', on, '監視していません', 'live-why');",
   "  flushWhy();",
   "};",

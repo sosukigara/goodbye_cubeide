@@ -175,6 +175,30 @@ export function filterWatchedSymbols(
 }
 
 /**
+ * Expand watch names to pollable leaves: a struct/array group name becomes
+ * every leaf underneath it, an exact leaf stays itself, and an unknown name
+ * is preserved for the nm fallback. Order-preserving and deduplicated.
+ */
+export function expandWatchNames(res: ElfResolution, names: readonly string[]): string[] {
+  const filter = filterWatchedSymbols(res, names);
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const s of filter.symbols) {
+    if (!seen.has(s.name)) {
+      seen.add(s.name);
+      out.push(s.name);
+    }
+  }
+  for (const u of filter.unmatched) {
+    if (!seen.has(u)) {
+      seen.add(u);
+      out.push(u);
+    }
+  }
+  return out;
+}
+
+/**
  * Japanese, actionable summary of a sidecar USB failure. The raw line is
  * kept verbatim in the text: the underlying cause of Errno 110 is still
  * unknown, so hiding the original string would only make it harder to chase.

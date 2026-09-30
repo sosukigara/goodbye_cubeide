@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   PROBE_BUSY_MESSAGE,
   buildResolutionJson,
+  expandWatchNames,
   extraArgs,
   filterWatchedSymbols,
   hasWindow,
@@ -165,6 +166,29 @@ describe("zero-window (catalog-only) resolution", () => {
     const filter = filterWatchedSymbols(CATALOG_RES, ["counter", "ghost"]);
     expect(filter.symbols.map((s) => s.name)).toEqual(["counter"]);
     expect(filter.unmatched).toEqual(["ghost"]);
+  });
+});
+
+describe("expandWatchNames (struct add registers its leaves)", () => {
+  const TREE_RES: ElfResolution = {
+    ...RES,
+    symbols: [
+      { name: "debug.target_transform.vx", address: "0x200000bc", offset: 0, size: 4, type: "float" },
+      { name: "debug.target_transform.vy", address: "0x200000c0", offset: 4, size: 4, type: "float" },
+      { name: "sys.loop_hz", address: "0x200000ec", offset: 48, size: 4, type: "uint32_t" },
+    ],
+  };
+  it("expands a struct group to its leaves", () => {
+    expect(expandWatchNames(TREE_RES, ["debug.target_transform"]))
+      .toEqual(["debug.target_transform.vx", "debug.target_transform.vy"]);
+  });
+  it("keeps exact leaves and unknown names untouched", () => {
+    expect(expandWatchNames(TREE_RES, ["sys.loop_hz", "tuner_params"]))
+      .toEqual(["sys.loop_hz", "tuner_params"]);
+  });
+  it("dedups overlapping group and leaf selections", () => {
+    expect(expandWatchNames(TREE_RES, ["debug.target_transform", "debug.target_transform.vx"]))
+      .toEqual(["debug.target_transform.vx", "debug.target_transform.vy"]);
   });
 });
 
