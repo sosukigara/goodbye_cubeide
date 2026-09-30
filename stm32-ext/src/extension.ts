@@ -86,6 +86,7 @@ import {
   unmount as unmountVariablePanel,
 } from "./live/variablePanel";
 import { WatchBatcher } from "./live/watchBatch";
+import { resolveDapLaunch } from "./debug/dapLaunch";
 import { isUnder } from "./live/namePath";
 import { buildWatchPickItems } from "./live/pickItems";
 
@@ -892,7 +893,7 @@ export class LivePanelProvider {
     this.tailCollected = 0;
     this.lastDropReport = 0;
     const checked = readSettings();
-    const hz = checked.ok ? checked.value.pollHz : 100;
+    const hz = checked.ok ? checked.value.pollHz : 50;
     this.postStatus("starting", catalogMode
       ? `監視を開始します (${hz}Hz、カタログモード: DebugGlobalなし)`
       : `監視を開始します (${hz}Hz)`);
@@ -2907,6 +2908,39 @@ export function activate(context: vscode.ExtensionContext): void {
   );
   context.subscriptions.push(
     vscode.commands.registerCommand("stm32ext.showGraph", () => { openGraphPanel(); }),
+  );
+  // Native Run & Debug UI via the bundled DAP adapter (Q7-A: launch.json
+  // stays minimal; elf/target resolve from stm32ext.* + the last build).
+  context.subscriptions.push(
+    vscode.debug.registerDebugConfigurationProvider("stm32-dap", {
+      provideDebugConfigurations() {
+        return [{ type: "stm32-dap", request: "attach", name: "STM32 Attach" }];
+      },
+      resolveDebugConfiguration(
+        _folder: vscode.WorkspaceFolder | undefined,
+        config: vscode.DebugConfiguration,
+      ): vscode.DebugConfiguration | undefined {
+        const raw = config as Record<string, unknown>;
+        const resolved = resolveDapLaunch(
+          { elf: raw["elf"], target: raw["target"] },
+          readPersistedLiveElf(context.workspaceState),
+        );
+        if (!resolved.ok) {
+          void vscode.window.showErrorMessage(`STM32 DAP: ${resolved.error}`);
+          return undefined;
+        }
+        raw["elf"] = resolved.elf;
+        raw["target"] = resolved.target;
+        return config;
+      },
+    }),
+    vscode.debug.registerDebugAdapterDescriptorFactory("stm32-dap", {
+      createDebugAdapterDescriptor(): vscode.DebugAdapterDescriptor {
+        return new vscode.DebugAdapterExecutable(sidecarPythonNow(), [
+          join(scriptsDir, "stm32_dap.py"),
+        ]);
+      },
+    }),
   );
   context.subscriptions.push(
     vscode.commands.registerCommand("stm32ext.flash", () =>

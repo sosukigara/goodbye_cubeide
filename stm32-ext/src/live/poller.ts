@@ -5,7 +5,7 @@
 
 export const CSV_HEADER = "timestamp,address,name,value";
 
-export const DEFAULT_POLL_HZ = 100;
+export const DEFAULT_POLL_HZ = 50;
 
 export interface LiveSample {
   readonly timestamp: string;
