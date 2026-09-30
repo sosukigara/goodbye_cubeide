@@ -320,6 +320,21 @@ describe("variable panel live values", () => {
     expect(p.valueOf("constructor")).toBe("-");
   });
 
+  it("removing one group member keeps an unrelated prototype-named row", () => {
+    // `drop` was a plain {} so `drop["toString"]` read Object.prototype and
+    // was truthy: removing "grp.myvar" stripped the unrelated "toString" row
+    // from V.order while V.watched still held it, desyncing the two.
+    const p = boot();
+    p.post(types({ "grp.myvar": LEAF(), "toString": LEAF() }));
+    p.post({ kind: "live-watchlist", names: ["grp.myvar", "toString"] });
+    expect(p.rowNames()).toContain("toString");
+    p.el("var-picker").value = "myvar";
+    p.el("var-remove").fire("click");
+    expect(p.posted).toEqual([{ kind: "var-remove", name: "grp.myvar" }]);
+    expect(p.rowNames()).toContain("toString");
+    expect(watchedOf(p, "toString")).toBe("1");
+  });
+
   it("changes the value cell when the next batch carries a new value", () => {
     const p = boot();
     // Exact host order: mount (seed []) -> addTypeTarget (live-types +

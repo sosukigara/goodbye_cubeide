@@ -407,7 +407,15 @@ export function partitionOutOfWindowSymbols(
   }
   return { inWindow, outOfWindowAsExtras };
 }
-/** Merge stored watchlist names against a resolution: known extras with addresses. */
+/** Merge stored watchlist names against a resolution: known extras with addresses.
+ *
+ * A watched STRUCT/ARRAY group name (e.g. `measure`) is legal: it is not a
+ * leaf, so it misses the exact map below, but filterWatchedSymbols expands it
+ * to its leaves (polled via the resolution JSON). Such a name is neither an
+ * --extra (a 4-byte poll of a whole struct would read garbage) nor
+ * unresolved — it is skipped here via the same expansion logic, so the poll
+ * semantics stay exactly: groups expand to leaves, never one blob.
+ */
 export function resolveWatchlist(
   names: readonly string[],
   res: ElfResolution,
@@ -425,6 +433,9 @@ export function resolveWatchlist(
     const hit = byName.get(name);
     if (hit !== undefined) {
       continue; // already in the resolved set; no --extra needed
+    }
+    if (filterWatchedSymbols(res, [name]).symbols.length > 0) {
+      continue; // a group name: its leaves are polled via the JSON, not here
     }
     const addr = nmLookup(name);
     if (addr !== undefined) {

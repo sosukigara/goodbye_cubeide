@@ -356,7 +356,15 @@ class Adapter:
         except Exception as e:  # noqa: BLE001 - probe errors are user-facing
             self.respond(req, False, message=str(e))
             return
-        self.target = Target(probe, mock)
+        new_target = Target(probe, mock)
+        if self.target is not None:
+            old = self.target
+            try:
+                old.resume()
+            except Exception:  # noqa: BLE001 - best-effort resume
+                pass
+            old.close()
+        self.target = new_target
         self.refs = {}
         self.next_ref = 1
         self.respond(req, True)
@@ -490,7 +498,8 @@ class Adapter:
         self.event("continued", {"threadId": 1,
                                  "allThreadsContinued": True})
 
-    def do_disconnect(self, req):
+    def close_target(self):
+        """Best-effort resume + close, no DAP I/O (safe on EOF)."""
         if self.target is not None:
             try:
                 self.target.resume()
@@ -498,6 +507,9 @@ class Adapter:
                 pass
             self.target.close()
             self.target = None
+
+    def do_disconnect(self, req):
+        self.close_target()
         self.respond(req, True)
         self.running = False
 
@@ -547,6 +559,7 @@ def main(argv=None):
         if msg is None:
             break
         adapter.dispatch(msg)
+    adapter.close_target()
     return 0
 
 
