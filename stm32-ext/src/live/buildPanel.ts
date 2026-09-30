@@ -7,27 +7,39 @@ export const BUILD_PANEL_TITLE = "STM32 Build";
 
 const BUILD_CSS = `<style>`
   + `html,body{height:100%}`
-  + `body{font-family:var(--vscode-font-family,sans-serif);font-size:var(--vscode-font-size,13px);color:var(--vscode-foreground,#ccc);margin:0;padding:14px 18px;box-sizing:border-box;overflow:auto;background:transparent}`
-  + `h1{font-size:1.05em;font-weight:700;margin:0 0 2px;padding:0;letter-spacing:.04em}`
+  + `body{font-family:var(--vscode-font-family,sans-serif);font-size:var(--vscode-font-size,13px);color:var(--vscode-foreground,#ccc);margin:0;padding:16px 20px;box-sizing:border-box;overflow:auto;background:transparent}`
+  + `h1{font-size:1.1em;font-weight:700;margin:0 0 2px;padding:0 0 0 10px;border-left:3px solid var(--vscode-textLink-foreground,#3794ff);letter-spacing:.03em}`
   + `h1 .ver{font-weight:400;font-size:.8em;opacity:.5}`
   + `.sub{opacity:.65;font-size:.9em;margin:0 0 12px}`
   + `.bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}`
-  + `button{font:inherit;padding:5px 14px;border-radius:4px;border:1px solid transparent;cursor:pointer;background:var(--vscode-button-secondaryBackground,#3a3d41);color:var(--vscode-button-secondaryForeground,#ccc)}`
+  + `button{font:inherit;padding:6px 16px;border-radius:6px;border:1px solid transparent;cursor:pointer;background:var(--vscode-button-secondaryBackground,#3a3d41);color:var(--vscode-button-secondaryForeground,#ccc);transition:filter .12s ease}`
+  + `button:hover:not(:disabled){filter:brightness(1.15)}`
   + `button.primary{background:var(--vscode-button-background,#0e639c);color:var(--vscode-button-foreground,#fff)}`
   + `button:disabled{opacity:.45;cursor:default}`
   + `button:focus-visible{outline:1px solid var(--vscode-focusBorder,#007fd4)}`
-  + `.status{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;margin:0 0 6px}`
-  + `.pill{font-weight:700;font-size:1em}`
-  + `.pill.ok{color:var(--vscode-testing-iconPassed,#388a34)}.pill.bad{color:var(--vscode-testing-iconFailed,#f14c4c)}.pill.run{color:var(--vscode-testing-iconQueued,#cca700)}.pill.idle{opacity:.6;font-weight:400}`
-  + `.pct,.path,.elapsed{font-family:var(--vscode-editor-font-family,monospace);font-variant-numeric:tabular-nums;opacity:.8}`
-  + `.path{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}`
-  + `progress{width:100%;height:5px;margin:0 0 12px}`
-  + `.diags{margin:0;padding:0;list-style:none;max-width:900px}`
-  + `.diags li{margin:2px 0}`
-  + `.diag{display:block;font-family:var(--vscode-editor-font-family,monospace);color:var(--vscode-textLink-foreground,#3794ff);text-decoration:none;padding:2px 0}`
+  + `.status{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:0 0 8px;padding:10px 14px;background:rgba(127,127,127,.07);border:1px solid rgba(127,127,127,.2);border-radius:10px}`
+  + `.pill{font-weight:700;font-size:.9em;padding:2px 12px;border-radius:999px;background:rgba(127,127,127,.16)}`
+  + `.pill.ok{color:var(--vscode-testing-iconPassed,#4fc34f);background:rgba(56,138,52,.18)}`
+  + `.pill.bad{color:var(--vscode-testing-iconFailed,#f14c4c);background:rgba(241,76,76,.16)}`
+  + `.pill.run{color:var(--vscode-testing-iconQueued,#e2c000);background:rgba(204,167,0,.16)}`
+  + `.pill.idle{opacity:.65;font-weight:400}`
+  + `.pct,.elapsed{font-family:var(--vscode-editor-font-family,monospace);font-variant-numeric:tabular-nums;opacity:.85;font-weight:600}`
+  + `.path{font-family:var(--vscode-editor-font-family,monospace);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%;opacity:.75}`
+  + `progress{width:100%;height:6px;border-radius:999px;overflow:hidden;margin:0 0 12px}`
+  + `progress::-webkit-progress-bar{background:rgba(127,127,127,.18);border-radius:999px}`
+  + `progress::-webkit-progress-value{background:var(--vscode-textLink-foreground,#3794ff);border-radius:999px}`
+  + `progress::-moz-progress-bar{background:var(--vscode-textLink-foreground,#3794ff);border-radius:999px}`
+  + `.diags{margin:0;padding:10px 12px;list-style:none;max-width:900px;background:rgba(127,127,127,.05);border:1px solid rgba(127,127,127,.2);border-radius:10px}`
+  + `.diags:empty{display:none}`
+  + `.diags li{margin:3px 0}`
+  + `.diag{display:block;font-family:var(--vscode-editor-font-family,monospace);color:var(--vscode-textLink-foreground,#3794ff);text-decoration:none;padding:3px 6px;border-radius:6px}`
+  + `.diag:hover{background:rgba(127,127,127,.12)}`
   + `.diag.warn{color:var(--vscode-editorWarning-foreground,#cca700)}`
   + `.empty{opacity:.6}`
   + `.cause{white-space:pre-wrap;opacity:.85;margin:8px 0 0;max-width:900px}`
+  + `::-webkit-scrollbar{width:10px;height:10px}`
+  + `::-webkit-scrollbar-thumb{background:rgba(127,127,127,.35);border-radius:999px;border:2px solid transparent;background-clip:content-box}`
+  + `::-webkit-scrollbar-track{background:transparent}`
   + `</style>`;
 
 const BUILD_SCRIPT = `var __SEED = __BUILD_SEED__;`
