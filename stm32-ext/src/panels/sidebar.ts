@@ -139,17 +139,24 @@ function liveSection(s: SidebarState): string {
 }
 
 function graphSection(s: SidebarState): string {
-  const names = s.graphSeries.length > 0 ? s.graphSeries.join(", ") : "";
   const rows = s.graphSeries.map((n) =>
     `<li data-name="${esc(n)}" data-visible="1"><span class="dot"></span>`
     + `<span class="nm">${esc(n)}</span><span class="vv">—</span><span class="st">表示</span></li>`).join("");
   return `<a class="btn primary" data-testid="graph-open" role="button" href="command:stm32ext.showGraph">グラフを開く</a>`
-  + `<input data-testid="graph-input" type="text" list="graph-name-list" placeholder="sys.loop_hz" aria-label="グラフに追加する変数名" value="${esc(names)}">`
+  // An entry field, not a mirror of the list below: it is never seeded with the
+  // plotted names, so a caret edit cannot splice a half-typed name onto one of
+  // them and post the concatenation as a new series.
+  + `<input data-testid="graph-input" type="text" list="graph-name-list" placeholder="系列名を入力" aria-label="系列の変数名（入力して追加・削除）" title="系列名を入力して「追加」で変数ピッカー、「削除」で系列から外す">`
     + `<datalist id="graph-name-list" data-testid="graph-names"></datalist>`
-    + `<button data-testid="graph-add" title="入力した変数をグラフに追加">追加</button> `
-    + `<button data-testid="graph-remove" title="入力した変数をグラフから削除">削除</button>`
+    + `<button data-testid="graph-add" title="変数ピッカーから系列を選ぶ">追加</button> `
+    + `<button data-testid="graph-remove" title="入力した系列名をグラフから削除">削除</button>`
     + `<p class="why" data-testid="graph-why"></p>`
-    + `<ul class="series" data-testid="graph-series" role="list">`
+    // The action answer, same role the live section gives live-status-text:
+    // graph-why is the gate's own line and flushWhy() owns it. `msg` is what
+    // collapses the line while it is empty (p.msg:empty), so the section does
+    // not carry a permanent gap.
+    + `<p class="note msg" data-testid="graph-note" role="status" aria-live="polite"></p>`
+    + `<ul class="series" data-testid="graph-series" role="list" aria-label="登録中の系列">`
     + (rows !== "" ? rows : `<li class="empty">系列がありません</li>`)
     + `</ul>`;
 }
@@ -866,6 +873,19 @@ export const SIDEBAR_SCRIPT: string = [
   "    box.appendChild(li);",
   "  });",
   "};",
+  // Membership comes from the rendered rows, not from the input. 追加/削除
+  // compare against `series`, and the rows are the only thing that was ever
+  // right on the first frame — before the host's first graph-series lands.
+  "const seedSeries = () => {",
+  "  const box = el('graph-series');",
+  "  if (!box) return;",
+  "  const kids = box.children;",
+  "  for (let i = 0; i < kids.length; i += 1) {",
+  "    const name = kids[i].dataset.name;",
+  "    if (name) series.set(name, { visible: kids[i].dataset.visible !== '0', color: PALETTE[i % PALETTE.length] });",
+  "  }",
+  "};",
+  "const graphNote = (t) => setText(el('graph-note'), t);",
   "",
   "// --------------------------------------------------------------------- log",
   "const logNode = el('log-tail');",
@@ -1020,10 +1040,10 @@ export const SIDEBAR_SCRIPT: string = [
   "  const src = el('live-source');",
   "  if (src) { src.textContent = s.liveSource ? String(s.liveSource).split('/').pop() : ''; src.title = s.liveSource || ''; }",
   "  setText(el('live-drop-rate'), s.liveDrop || '');",
-  "  setText(el('live-unresolved'), (s.unresolved && s.unresolved.length > 0) ? '未解決 ' + s.unresolved.join(', ') : '');",
-  // The host pushes state on every build settle / select / flash phase, so an
-  // unconditional write would delete a half-typed name.
-  "  if (Array.isArray(s.graphSeries) && document.activeElement !== gi) { const csv = s.graphSeries.join(', '); if (gi) gi.value = csv; applySeries(csv); }",
+  // The graph input is an entry field and is never seeded: the host pushes
+  // state on every build settle / select / flash phase, so a write here would
+  // both delete a half-typed name and re-mirror the list into the box.
+  "  if (Array.isArray(s.graphSeries)) applySeries(s.graphSeries.join(','));",
   "  if (typeof s.logTail === 'string' && s.logTail !== '') { logBuf = s.logTail.replace(/\\n$/, '').split('\\n'); renderLog(); }",
   "  applyBuild(); applyFlash(); applyLive(); applyGraph();",
   "};",
@@ -1049,11 +1069,27 @@ export const SIDEBAR_SCRIPT: string = [
   "onClick('live-add-watch', () => post('live-add-watch'));",
   "onClick('live-pause-toggle', () => post(st.live === 'paused' ? 'live-resume' : 'live-pause'));",
   "onClick('log-clear', () => { logBuf = []; renderLog(); post('log-clear'); });",
-  "const graphNames = () => String((gi ? gi.value : '') || '').split(',').map((t) => t.trim()).filter((t) => t !== '');",
-  // One message per name, like the graph panel: the host adds a series by
-  // exact name, so posting "a, b" would create a series literally called "a, b".
-  "onClick('graph-add', () => { const ns = graphNames(); for (let i = 0; i < ns.length; i += 1) post('graph-add', { name: ns[i] }); });",
-  "onClick('graph-remove', () => { const ns = graphNames(); for (let i = 0; i < ns.length; i += 1) post('graph-remove', { name: ns[i] }); });",
+  "const graphName = () => String((gi ? gi.value : '') || '').trim();",
+  // Series selection is the host's QuickPick (`var-pick`), the same route the
+  // graph panel and the variable tab use: the host expands a picked group
+  // through leavesUnder() and calls addSeries, so a name that resolves to
+  // nothing can never become a plotted-but-permanently-blank series. Re-adding
+  // is answered here instead of being posted, because addSeries() dedups and
+  // the press would otherwise look broken.
+  "onClick('graph-add', () => {",
+  "  const n = graphName();",
+  "  if (n === '') { graphNote('系列名を入力してください'); return; }",
+  "  if (series.has(n)) { graphNote(n + ' は既にグラフに追加済みです'); return; }",
+  "  graphNote('');",
+  "  post('var-pick', { query: n });",
+  "});",
+  "onClick('graph-remove', () => {",
+  "  const n = graphName();",
+  "  if (n === '') { graphNote('系列名を入力してください'); return; }",
+  "  if (!series.has(n)) { graphNote(n + ' はグラフにありません'); return; }",
+  "  graphNote('');",
+  "  post('graph-remove', { name: n });",
+  "});",
   "",
   "const pbox = el('project-rows');",
   "if (pbox) pbox.addEventListener('click', (ev) => {",
@@ -1104,7 +1140,10 @@ export const SIDEBAR_SCRIPT: string = [
   "}",
   "",
   "if (gi) {",
-  "  gi.addEventListener('input', () => { applySeries(gi.value); applyGraph(); });",
+  // Only the gate follows the keystrokes. The list used to be re-rendered from
+  // this box on every input event, which is what made the entry field and the
+  // series list read as one control.
+  "  gi.addEventListener('input', () => { applyGraph(); });",
   "}",
   "if (cf) cf.addEventListener('input', () => { catalogQuery = cf.value; applyCatalogFilter(); });",
   "if (la) la.addEventListener('change', () => { logPinned = !!la.checked; if (logPinned && logNode) logNode.scrollTop = logNode.scrollHeight; });",
@@ -1132,13 +1171,12 @@ export const SIDEBAR_SCRIPT: string = [
   "    return;",
   "  }",
   "  if (m.kind === 'live-drop') { setText(el('live-drop-rate'), m.summary || ''); return; }",
-  "  if (m.kind === 'live-unresolved') { setText(el('live-unresolved'), (m.names || []).length > 0 ? '未解決 ' + m.names.join(', ') : ''); return; }",
-  "  if (m.kind === 'live-write-result') {",
-  "    setText(el('live-write-result'), m.message || '');",
-  "    const wtr = m.name ? cache.get(m.name) : null;",
-  "    if (wtr) setRowResult(wtr, m.ok === true, m.message || '');",
-  "    return;",
-  "  }",
+  // live-unresolved and live-write-result have no element here on purpose: the
+  // write feedback surface is the editor-area variable tab (variablePanel),
+  // which renders both, and the sidebar keeps no table. Both messages are
+  // consumed and dropped rather than written to a node that cannot exist.
+  "  if (m.kind === 'live-unresolved') { return; }",
+  "  if (m.kind === 'live-write-result') { return; }",
   "  if (m.kind === 'live-watchlist') { applyWatchlist(Array.isArray(m.names) ? m.names : []); return; }",
   "  if (m.kind === 'build-progress') {",
   "    st.build = 'running';",
@@ -1165,16 +1203,13 @@ export const SIDEBAR_SCRIPT: string = [
   "      if (!list[i] || typeof list[i].name !== 'string' || list[i].name === '') continue;",
   "      series.set(list[i].name, { visible: list[i].visible !== false, color: list[i].color || PALETTE[i % PALETTE.length] });",
   "    }",
-  "    const shownNames = [];",
-  "    series.forEach((info, name) => { if (info.visible) shownNames.push(name); });",
-  "    if (gi) gi.value = shownNames.join(', ');",
   "    renderSeries();",
   "    applyGraph();",
   "    return;",
   "  }",
   "});",
   "",
-  "if (gi) applySeries(gi.value);",
+  "seedSeries();",
   "refreshEmpty();",
   "applyLive(); applyBuild(); applyFlash(); applyGraph();",
 ].join("\n");
@@ -1187,6 +1222,7 @@ export type SidebarMessageKind =
   | "live-export-csv" | "live-add-watch" | "live-write"
   | "live-add" | "live-remove-names"
   | "log-clear" | "log-filter"
+  | "var-pick"
   | "graph-add" | "graph-remove";
 
 export interface SidebarMessage {
@@ -1197,6 +1233,8 @@ export interface SidebarMessage {
   /** Present only for `live-add` / `live-remove-names`. Every other kind keeps
    *  its original four-field shape so existing host switch arms stay valid. */
   readonly names?: readonly string[];
+  /** Only set for `var-pick`: the graph input's text as the QuickPick seed. */
+  readonly query?: string;
 }
 
 const SIMPLE: readonly SidebarMessageKind[] = [
@@ -1226,6 +1264,9 @@ export function parseSidebarMessage(raw: unknown): SidebarMessage | null {
   }
   if (kind === "project-select" && typeof r["dir"] === "string") {
     return { kind, dir: r["dir"], name: "", value: "" };
+  }
+  if (kind === "var-pick" && typeof r["query"] === "string") {
+    return { kind, dir: "", name: "", value: "", query: r["query"] };
   }
   if (kind === "graph-add" && typeof r["name"] === "string") {
     return { kind, dir: "", name: r["name"], value: "" };

@@ -437,7 +437,9 @@ describe("audit-round1: expandGraphNames deletion changed nothing observable", (
     expect(() => new Script(SIDEBAR_SCRIPT)).not.toThrow();
   });
 
-  it("the graph-add flow still posts one message per name", () => {
+  it("the graph-add flow still splits nothing and posts the parse shape verbatim", () => {
+    // The parse layer never depended on the CSV helper: the add path asks the
+    // host picker with the field's text as the seed, exactly as it arrives.
     const b = boot();
     const input = b.$('[data-testid="graph-input"]');
     input!.value = "sys.loop_hz, drive.mode";
@@ -445,8 +447,7 @@ describe("audit-round1: expandGraphNames deletion changed nothing observable", (
     b.posted.length = 0;
     b.$('[data-testid="graph-add"]')?.dispatchEvent({ type: "click", target: b.$('[data-testid="graph-add"]') });
     expect(b.posted).toEqual([
-      { kind: "graph-add", name: "sys.loop_hz" },
-      { kind: "graph-add", name: "drive.mode" },
+      { kind: "var-pick", query: "sys.loop_hz, drive.mode" },
     ]);
   });
 });

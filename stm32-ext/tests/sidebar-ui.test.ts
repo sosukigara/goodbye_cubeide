@@ -819,6 +819,18 @@ describe("sidebar: states and affordances", () => {
     expect(b.$('[data-testid="live-status-text"]')?.textContent).toBe("");
   });
 
+  it("writes to no testid its own HTML cannot contain", () => {
+    // The defect is invisible by construction — el() returns null and setText
+    // guards, so the two messages were accepted and thrown away while the code
+    // still claimed to report them. Both ids are in the absent list asserted
+    // above, and the write feedback surface is the editor-area variable tab
+    // (variablePanel), which already handles both. So the writes go; the
+    // elements do not come back.
+    for (const id of ["live-unresolved", "live-write-result"]) {
+      expect(SIDEBAR_SCRIPT, `el('${id}') has no element to write to`).not.toContain(`el('${id}')`);
+    }
+  });
+
   it("the log offers clear, a filter that is reported, and an Output link", () => {
     const b = boot();
     expect(b.$('[data-testid="log-open"]')?.getAttribute("href")).toBe("command:stm32ext.showLog");
@@ -866,8 +878,9 @@ describe("sidebar: graph section is a launcher plus a series list, not a second 
     expect(rows.map((r) => r.dataset.visible)).toEqual(["1", "0"]);
     expect(rows[0]!.children[0]!.style.background).toBe("#4c9aff");
     expect(rows[1]!.children[3]!.textContent).toBe("非表示");
-    // Only the visible series belong in the picker, so the list cannot disagree with it.
-    expect(b.$('[data-testid="graph-input"]')?.getAttribute("value")).toBe("sys.bias");
+    // The list is the display. The input is a separate entry field and stays
+    // empty, so nothing it holds can be mistaken for the current selection.
+    expect(b.$('[data-testid="graph-input"]')?.value).toBe("");
   });
 
   it("shows the last DECODED value per series, updated in place, not the bit pattern", () => {
@@ -892,7 +905,7 @@ describe("sidebar: graph section is a launcher plus a series list, not a second 
     expect(b.$('[data-testid="graph-series"] li')?.dataset.name).toBe("sys.loop_hz");
   });
 
-  it("add/remove gate on an empty name and post ONE message per name", () => {
+  it("add/remove gate on an empty name and ask the host picker for the typed name", () => {
     const b = boot();
     const add = b.$('[data-testid="graph-add"]');
     expect(add?.disabled).toBe(true);
@@ -902,10 +915,85 @@ describe("sidebar: graph section is a launcher plus a series list, not a second 
     input?.dispatchEvent({ type: "input", target: input });
     expect(add?.disabled).toBe(false);
     add?.dispatchEvent({ type: "click", target: add });
-    expect(b.posted.at(-1)).toEqual({ kind: "graph-add", name: "sys.loop_hz" });
+    // Series selection is the host's QuickPick, one route for every surface
+    // (the graph panel already did this): the sidebar asks, the host expands a
+    // picked group through leavesUnder() and calls addSeries. Posting
+    // `graph-add` from here was a second, silently different way to do the
+    // same job — and it accepted a name that matches nothing.
+    expect(b.posted.at(-1)).toEqual({ kind: "var-pick", query: "sys.loop_hz" });
+    // 削除 still names the series exactly, but only once it is plotted: the
+    // host's removeSeries is an exact-index splice, so removing a name the
+    // graph never had was a press that reported nothing.
     const rm = b.$('[data-testid="graph-remove"]');
     rm?.dispatchEvent({ type: "click", target: rm });
-    expect(b.posted.at(-1)).toEqual({ kind: "graph-remove", name: "sys.loop_hz" });
+    expect(b.posted.at(-1)).toEqual({ kind: "var-pick", query: "sys.loop_hz" });
+    b.send({ kind: "graph-series", series: [{ name: "sys.loop_hz", color: "#4c9aff", visible: true }] });
+    b.posted.length = 0;
+    rm?.dispatchEvent({ type: "click", target: rm });
+    expect(b.posted).toEqual([{ kind: "graph-remove", name: "sys.loop_hz" }]);
+  });
+
+  it("adding an already-plotted series is a no-op with a reason, not a second add", () => {
+    // The box used to hold the plotted list, so 追加 re-posted every name in it.
+    // The host's addSeries() dedups, which is why this produced no error and no
+    // change either: the press looked broken. The webview is where the answer
+    // has to be, and it has to be visible.
+    const b = withTree(boot());
+    b.send({ kind: "graph-series", series: [{ name: "sys.bias", color: "#4c9aff", visible: true }] });
+    const input = b.$('[data-testid="graph-input"]');
+    input!.value = "sys.bias";
+    input?.dispatchEvent({ type: "input", target: input });
+    b.posted.length = 0;
+    b.$('[data-testid="graph-add"]')?.dispatchEvent({ type: "click", target: b.$('[data-testid="graph-add"]') });
+    expect(b.posted).toEqual([]);
+    expect(b.$('[data-testid="graph-note"]')?.textContent).toContain("sys.bias");
+    expect(b.$('[data-testid="graph-note"]')?.textContent).toContain("追加済み");
+  });
+
+  it("deleting a series the graph does not have says so instead of doing nothing", () => {
+    const b = withTree(boot());
+    b.send({ kind: "graph-series", series: [{ name: "sys.bias", color: "#4c9aff", visible: true }] });
+    const input = b.$('[data-testid="graph-input"]');
+    input!.value = "sys.loop_hz";
+    input?.dispatchEvent({ type: "input", target: input });
+    b.posted.length = 0;
+    b.$('[data-testid="graph-remove"]')?.dispatchEvent({ type: "click", target: b.$('[data-testid="graph-remove"]') });
+    expect(b.posted).toEqual([]);
+    expect(b.$('[data-testid="graph-note"]')?.textContent).toContain("sys.loop_hz");
+  });
+
+  it("the input is an entry field: the plotted list never lands in it", () => {
+    // One control wearing two hats is the root cause: with the current series
+    // list sitting in the box, a caret edit produces `sys.biassys.loop_hz`,
+    // which the host accepts verbatim and which can then never receive a
+    // sample — a blank legend entry with no error anywhere.
+    const b = withTree(boot());
+    b.send({ kind: "live-bootstrap", project: "/fw/a", hz: 100, state: { ...SIDEBAR_PANEL_DEFAULT_STATE, graphSeries: ["sys.bias", "sys.loop_hz"] } });
+    const input = b.$('[data-testid="graph-input"]');
+    expect(input?.value).toBe("");
+    b.send({ kind: "graph-series", series: [{ name: "sys.bias", color: "#4c9aff", visible: true }] });
+    expect(input?.value).toBe("");
+    // The list is the display, and it still tracks the host.
+    expect(b.$$('[data-testid="graph-series"] li').map((r) => r.dataset.name)).toEqual(["sys.bias"]);
+    // A half-typed name survives every host push: nothing writes the box, so
+    // the activeElement guard the input needed is no longer load-bearing.
+    input!.value = "sys.l";
+    b.send({ kind: "live-bootstrap", project: "/fw/a", hz: 100, state: { ...SIDEBAR_PANEL_DEFAULT_STATE, graphSeries: ["sys.loop_hz"] } });
+    b.send({ kind: "graph-series", series: [{ name: "sys.bias", color: "#4c9aff", visible: true }] });
+    expect(input?.getAttribute("value")).toBe("sys.l");
+  });
+
+  it("an unresolvable name is the host's to reject, not the sidebar's to add", () => {
+    // The QuickPick only offers names livePanel.variableCandidates() knows, so
+    // an unresolvable string has nothing to accept. Routing the ask through it
+    // is what keeps a typo out of the series set.
+    const b = withTree(boot());
+    const input = b.$('[data-testid="graph-input"]');
+    input!.value = "sys.biassys.loop_hz";
+    input?.dispatchEvent({ type: "input", target: input });
+    b.posted.length = 0;
+    b.$('[data-testid="graph-add"]')?.dispatchEvent({ type: "click", target: b.$('[data-testid="graph-add"]') });
+    expect(b.posted).toEqual([{ kind: "var-pick", query: "sys.biassys.loop_hz" }]);
   });
 
   
@@ -940,30 +1028,24 @@ describe("sidebar: graph section is a launcher plus a series list, not a second 
     expect(b.$('[data-testid="graph-input"]')?.getAttribute("list")).toBe("graph-name-list");
   });
 
-  it("a multi-name picker posts one message per name, never a literal \"a, b\"", () => {
-    // The host seeds this field with graphSeries.join(", ") (extension.ts:2118)
-    // and adds a series by exact name, so the whole field must be split.
-    const b = boot();
+  it("several series at once is the host picker's multi-select, not a comma list", () => {
+    // The host used to seed this field with graphSeries.join(", ") and the
+    // sidebar split it back apart. Splitting a seeded display is what made one
+    // control look like two; the QuickPick is canSelectMany, so choosing three
+    // rows there is the multi-name path now.
+    const b = withTree(boot());
     const input = b.$('[data-testid="graph-input"]');
     input!.value = "sys.loop_hz, drive.mode ,  sys.bias ,";
     input?.dispatchEvent({ type: "input", target: input });
     b.posted.length = 0;
     b.$('[data-testid="graph-add"]')?.dispatchEvent({ type: "click", target: b.$('[data-testid="graph-add"]') });
-    expect(b.posted).toEqual([
-      { kind: "graph-add", name: "sys.loop_hz" },
-      { kind: "graph-add", name: "drive.mode" },
-      { kind: "graph-add", name: "sys.bias" },
-    ]);
-    b.posted.length = 0;
-    b.$('[data-testid="graph-remove"]')?.dispatchEvent({ type: "click", target: b.$('[data-testid="graph-remove"]') });
-    expect(b.posted).toEqual([
-      { kind: "graph-remove", name: "sys.loop_hz" },
-      { kind: "graph-remove", name: "drive.mode" },
-      { kind: "graph-remove", name: "sys.bias" },
-    ]);
-    // And the local list follows the same three names.
-    expect(b.$$('[data-testid="graph-series"] li').map((r) => r.dataset.name))
-      .toEqual(["sys.loop_hz", "drive.mode", "sys.bias"]);
+    // The typed text reaches the picker verbatim, so a comma shows up in the
+    // QuickPick filter and matches nothing instead of becoming a series called
+    // "sys.loop_hz, drive.mode ,  sys.bias ,".
+    expect(b.posted).toEqual([{ kind: "var-pick", query: "sys.loop_hz, drive.mode ,  sys.bias ," }]);
+    // Nothing is added locally on a press: the host's graph-series echo is the
+    // only writer of the list, so the two surfaces cannot disagree.
+    expect(b.$('[data-testid="graph-series"] li')?.textContent).toBe("系列がありません");
   });
 
   it("a host state push does not wipe a name the user is typing", () => {
@@ -971,13 +1053,17 @@ describe("sidebar: graph section is a launcher plus a series list, not a second 
     const input = b.$('[data-testid="graph-input"]');
     input!.focus();
     input!.value = "sys.l";
-    // The host pushes state on every build settle / project select / flash phase.
+    // The host pushes state on every build settle / project select / flash phase,
+    // and publishSeries() fires again on every add/remove. None of them writes
+    // this box, so the half-typed name is safe whether or not it has focus.
     b.send({ kind: "live-bootstrap", project: "/fw/a", hz: 100, state: { ...SIDEBAR_PANEL_DEFAULT_STATE, graphSeries: ["sys.loop_hz"] } });
-    expect(b.$('[data-testid="graph-input"]')?.getAttribute("value")).toBe("sys.l");
-    // Once the field loses focus the host is authoritative again.
+    b.send({ kind: "graph-series", series: [{ name: "sys.loop_hz", color: "#4c9aff", visible: true }] });
+    expect(input?.value).toBe("sys.l");
+    // The list the push describes did land, though.
+    expect(b.$('[data-testid="graph-series"] li')?.dataset.name).toBe("sys.loop_hz");
     input!.blur();
     b.send({ kind: "live-bootstrap", project: "/fw/a", hz: 100, state: { ...SIDEBAR_PANEL_DEFAULT_STATE, graphSeries: ["sys.loop_hz"] } });
-    expect(b.$('[data-testid="graph-input"]')?.getAttribute("value")).toBe("sys.loop_hz");
+    expect(input?.value).toBe("sys.l");
   });
 });
 
@@ -995,6 +1081,16 @@ describe("parseSidebarMessage: new tree messages", () => {
   it("accepts the log controls", () => {
     expect(parseSidebarMessage({ kind: "log-clear" })?.kind).toBe("log-clear");
     expect(parseSidebarMessage({ kind: "log-filter", text: "drop" })?.name).toBe("drop");
+  });
+
+  it("accepts var-pick with its query, and refuses a nameless one", () => {
+    // The host routes this to the one QuickPick the graph panel already uses;
+    // without a string seed there is nothing to filter the candidates with.
+    expect(parseSidebarMessage({ kind: "var-pick", query: "sys." }))
+      .toEqual({ kind: "var-pick", dir: "", name: "", value: "", query: "sys." });
+    expect(parseSidebarMessage({ kind: "var-pick", query: "" })?.query).toBe("");
+    expect(parseSidebarMessage({ kind: "var-pick" })).toBeNull();
+    expect(parseSidebarMessage({ kind: "var-pick", query: 7 })).toBeNull();
   });
 
   it("keeps the four-field shape for every pre-existing kind", () => {

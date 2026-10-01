@@ -2507,6 +2507,7 @@ class SidebarProvider implements vscode.WebviewViewProvider {
       doBuildFlash: () => Promise<void>;
       doFlash: (elfPath: string) => Promise<void>;
       liveStart: () => Promise<void>;
+      pickGraphVariables: (query: string) => void;
     },
   ) {}
   resolveWebviewView(view: vscode.WebviewView): void {
@@ -2609,6 +2610,12 @@ class SidebarProvider implements vscode.WebviewViewProvider {
         return;
       case "log-filter":
         // Filtering is a webview-local view concern; the host stores nothing.
+        return;
+      case "var-pick":
+        // One series picker for every surface (graph panel, variable tab,
+        // sidebar). The picked names come back through addSeries, which is the
+        // single place that also registers the watch.
+        this.deps.pickGraphVariables(msg.query ?? "");
         return;
       case "graph-add":
       case "graph-remove":
@@ -2965,6 +2972,12 @@ export function activate(context: vscode.ExtensionContext): void {
         (phase, percent) => { sidebar.setFlashPhase(phase, percent); });
     },
     liveStart: () => livePanel.restartLive(),
+    // The sidebar's 追加 asks for the same QuickPick the graph panel's does, so
+    // a picked group is expanded to its leaves here instead of becoming a
+    // plotted-but-never-sampled name. Late-bound on purpose: pickVariables is
+    // declared below, and no webview message can arrive before activate()
+    // finishes.
+    pickGraphVariables: (query: string) => { void pickGraphVariablesFlow(query); },
   });
   // graph-download-csv had no host handler at all: the panel asked, nothing
   // answered. The host owns the file write, so the panel needs no reply.
