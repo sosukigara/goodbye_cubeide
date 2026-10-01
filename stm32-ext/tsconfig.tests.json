@@ -6,10 +6,10 @@
   //  - module/moduleResolution ESM: tests execute under vitest (vite ESM
   //    transform), never as Node16 CJS, so import.meta is legal here.
   //  - types: exactly the @types set the base project auto-includes.
-  // ponytail: sibling test files with pre-existing type drift are excluded
-  // until their owning lanes clear them (census: 2026-09-30, see
-  // .omo/evidence/stm32-cli/task-11.vitest.log). Remove entries as lanes
-  // fix their files; do NOT relax strictness to absorb them.
+  // ponytail: include-only gate. All test files under tests/ are
+  // type-checked (2026-10-01: the last drift cleared, exclusions removed).
+  // Never re-add per-file excludes to hide drift — fix the file instead;
+  // do NOT relax strictness to absorb it.
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "rootDir": ".",
@@ -21,17 +21,6 @@
   "include": ["src", "tests"],
   "exclude": [
     "node_modules",
-    "out",
-    "tests/graph-panel.test.ts",
-    "tests/variable-panel.test.ts",
-    "tests/sidebar-ui.test.ts",
-    "tests/cli-setup.test.ts",
-    "tests/live-manager.test.ts",
-    "tests/cli-policy.test.ts",
-    "tests/audit-round1-sidebar.test.ts",
-    "tests/graph-watch.test.ts",
-    "tests/env-setup.test.ts",
-    "tests/pick-items.test.ts",
-    "tests/flash.test.ts"
+    "out"
   ]
 }

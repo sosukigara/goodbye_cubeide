@@ -39,17 +39,26 @@ vi.mock("vscode", () => ({
 import { GraphPanelProvider, LivePanelProvider } from "../src/extension.js";
 import { WatchBatcher } from "../src/live/watchBatch.js";
 import type { OutputChannel } from "vscode";
+import type { ElfResolution } from "../src/live/elfResolver.js";
 
 const CHANNEL = { appendLine: (): void => { /* test sink */ } } as unknown as OutputChannel;
 
-const RESOLUTION = {
+// Fully-populated ElfResolution: every required field is real resolver output,
+// not a cast. Window covers both symbols (0x200000bc + 6 = 0x200000c2) and
+// each offset is address - base, so the fixture is self-consistent.
+const RESOLUTION: ElfResolution = {
   elf: "/tmp/fw/Debug/fw.elf",
-  base: "0x08000000",
+  base: "0x200000bc",
+  size: 6,
+  end: "0x200000c2",
+  hasDebugInfo: true,
+  backend: "pyelftools",
   symbols: [
-    { name: "sys.loop_hz", address: "0x200000bc", size: 4, kind: "scalar", signed: true, type: "uint32_t" },
-    { name: "drive.motor_timeout", address: "0x200000c0", size: 2, kind: "scalar", signed: false, type: "uint16_t" },
+    { name: "sys.loop_hz", address: "0x200000bc", offset: 0, size: 4, kind: "scalar", signed: true, type: "uint32_t" },
+    { name: "drive.motor_timeout", address: "0x200000c0", offset: 4, size: 2, kind: "scalar", signed: false, type: "uint16_t" },
   ],
-  tree: { name: "debug", path: "", kind: "struct", children: [] },
+  unresolved: [],
+  tree: { name: "debug", address: "0x200000bc", size: 6, type: "struct", kind: "struct", signed: false, children: [] },
 };
 
 function fakeView(posted: unknown[]) {
