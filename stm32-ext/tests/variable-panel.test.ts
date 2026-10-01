@@ -34,10 +34,19 @@ interface StubEl {
   title: string;
   value: string;
   textContent: string;
+  // Same contract as graph-panel.test.ts: the stub builds these members, so
+  // the interface must carry them instead of hiding them behind a cast.
+  _text: string;
+  appendChild(c: StubEl): StubEl;
+  removeChild(c: StubEl): StubEl;
+  setAttribute(k: string, v: string): void;
+  getAttribute(k: string): string | null;
+  addEventListener(t: string, f: (ev: unknown) => void): void;
+  fire(t: string, ev?: unknown): void;
 }
 
 function makeEl(tag: string): StubEl {
-  const el = {
+  const el: StubEl = {
     tagName: tag.toUpperCase(),
     dataset: {} as Record<string, string>,
     style: {} as Record<string, string>,
@@ -86,7 +95,7 @@ function makeEl(tag: string): StubEl {
         f(ev);
       }
     },
-  } as unknown as StubEl;
+  };
   Object.defineProperty(el, "_text", { value: "", writable: true });
   return el;
 }

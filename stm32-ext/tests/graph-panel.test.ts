@@ -25,12 +25,21 @@ interface StubEl {
   textContent: string;
   width?: number;
   height?: number;
+  // The script under test drives a DOM-ish surface (append/remove, attributes,
+  // listeners); the stub must carry the members it actually builds below.
+  _text: string;
+  appendChild(c: StubEl): StubEl;
+  removeChild(c: StubEl): StubEl;
+  setAttribute(k: string, v: string): void;
+  getAttribute(k: string): string | null;
+  addEventListener(t: string, f: (ev: unknown) => void): void;
+  fire(t: string, ev?: unknown): void;
   getContext(kind: string): unknown;
   getBoundingClientRect(): { width: number; height: number };
 }
 
 function makeEl(tag: string, rect?: { width: number; height: number }): StubEl {
-  const el = {
+  const el: StubEl = {
     tagName: tag.toUpperCase(),
     dataset: {} as Record<string, string>,
     style: {} as Record<string, string>,
@@ -85,7 +94,7 @@ function makeEl(tag: string, rect?: { width: number; height: number }): StubEl {
     getBoundingClientRect(): { width: number; height: number } {
       return rect ?? { width: 900, height: 440 };
     },
-  } as unknown as StubEl;
+  };
   Object.defineProperty(el, "_text", { value: "", writable: true });
   return el;
 }
@@ -294,7 +303,7 @@ function boot(selected: readonly string[] = []): Panel {
 
 const T0 = Date.parse("2026-09-28T01:22:52.037Z");
 
-function sample(name: string, value: string, ms: number, size = 4): {
+function sample(name: string, value: number, ms: number, size = 4): {
   timestamp: string;
   address: string;
   name: string;
@@ -805,11 +814,11 @@ describe("graph panel controls", () => {
       p.post({ kind: "live-sample", samples: [sample("sys.loop_hz", i, i * 50)] });
     }
     p.flush();
-    const wide = p.paths()[p.paths().length - 1];
+    const wide = p.paths()[p.paths().length - 1]!;
     p.el("graph-window").value = "1000";
     p.el("graph-window").fire("change", { target: { value: "1000" } });
     p.flush();
-    const narrow = p.paths()[p.paths().length - 1];
+    const narrow = p.paths()[p.paths().length - 1]!;
     expect(narrow.pts.length).toBeLessThan(wide.pts.length);
     // 1s window at 50ms spacing keeps the last 20 points
     expect(narrow.pts.length).toBeLessThanOrEqual(25);
@@ -840,7 +849,9 @@ describe("graph panel name completion", () => {
     // Groups precede leaves: when the option list is truncated, the names that
     // survive are the ones carrying a whole subtree. Plain lexicographic order
     // is deliberately not the contract any more.
-    const isGroup = (v) => values.some((o) => o !== v && (o.startsWith(v + ".") || o.startsWith(v + "[")));
+    const isGroup = (v: string | null | undefined): boolean =>
+      typeof v === "string" &&
+      values.some((o) => typeof o === "string" && o !== v && (o.startsWith(v + ".") || o.startsWith(v + "[")));
     const firstLeaf = values.findIndex((v) => !isGroup(v));
     for (let i = 0; i < values.length && firstLeaf >= 0; i += 1) {
       if (isGroup(values[i])) {

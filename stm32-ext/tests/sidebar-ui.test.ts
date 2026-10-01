@@ -314,7 +314,7 @@ function matchCompound(el: StubEl, sel: string): boolean {
 }
 
 function matchParts(el: StubEl, parts: string[]): boolean {
-  if (!matchCompound(el, parts[parts.length - 1])) return false;
+  if (!matchCompound(el, parts[parts.length - 1]!)) return false;
   if (parts.length === 1) return true;
   const rest = parts.slice(0, -1);
   let p = el.parentNode;
@@ -338,7 +338,7 @@ function parseHtml(html: string): StubEl {
   const root = new StubEl("#root");
   const stack: StubEl[] = [root];
   let i = 0;
-  const top = (): StubEl => stack[stack.length - 1];
+  const top = (): StubEl => stack[stack.length - 1]!;
   while (i < html.length) {
     const lt = html.indexOf("<", i);
     if (lt < 0) break;
@@ -371,7 +371,7 @@ function parseHtml(html: string): StubEl {
     const are = /([\w:-]+)(?:\s*=\s*"([^"]*)")?/g;
     let am: RegExpExecArray | null;
     while ((am = are.exec(attrTxt)) !== null) {
-      el.setAttribute(am[1], decodeEntities(am[2] ?? ""));
+      el.setAttribute(am[1]!, decodeEntities(am[2] ?? ""));
     }
     if (tag === "input") el.checked = el.hasAttribute("checked");
     top().appendChild(el);
@@ -502,7 +502,9 @@ interface Leaf {
 }
 
 function leaf(l: Leaf): Record<string, unknown> {
-  return { children: [], kind: "scalar", signed: false, type: "int", ...l, name: l.path.split(".").pop() };
+  // No kind default: Leaf.kind is required so the spread always carries it;
+  // the old "scalar" literal was dead (always overwritten), which TS2783 flags.
+  return { children: [], signed: false, type: "int", ...l, name: l.path.split(".").pop() };
 }
 
 function node(name: string, type: string, children: unknown[]): Record<string, unknown> {
@@ -862,8 +864,8 @@ describe("sidebar: graph section is a launcher plus a series list, not a second 
     const rows = b.$$('[data-testid="graph-series"] li');
     expect(rows.map((r) => r.dataset.name)).toEqual(["sys.bias", "drive.mode"]);
     expect(rows.map((r) => r.dataset.visible)).toEqual(["1", "0"]);
-    expect(rows[0].children[0].style.background).toBe("#4c9aff");
-    expect(rows[1].children[3].textContent).toBe("非表示");
+    expect(rows[0]!.children[0]!.style.background).toBe("#4c9aff");
+    expect(rows[1]!.children[3]!.textContent).toBe("非表示");
     // Only the visible series belong in the picker, so the list cannot disagree with it.
     expect(b.$('[data-testid="graph-input"]')?.getAttribute("value")).toBe("sys.bias");
   });
@@ -872,15 +874,15 @@ describe("sidebar: graph section is a launcher plus a series list, not a second 
     const b = withTree(boot());
     b.send({ kind: "graph-series", series: [{ name: "sys.bias", color: "#4c9aff", visible: true }] });
     const li = b.$('[data-testid="graph-series"] li');
-    expect(li?.children[2].textContent).toBe("—");
-    const writesAtBuild = li?.children[2].__w ?? 0;
+    expect(li?.children[2]?.textContent).toBe("—");
+    const writesAtBuild = li?.children[2]?.__w ?? 0;
     b.send({ kind: "live-sample", samples: [sample("sys.bias", "0x3f800000")] });
-    expect(li?.children[2].textContent).toBe("1.00000");
+    expect(li?.children[2]?.textContent).toBe("1.00000");
     b.send({ kind: "live-sample", samples: [sample("sys.bias", "0xc0490fdb")] });
-    expect(li?.children[2].textContent).toBe("-3.14159");
+    expect(li?.children[2]?.textContent).toBe("-3.14159");
     // Same <li> throughout, and only the value cell is rewritten: no re-render.
     expect(b.$('[data-testid="graph-series"] li')).toBe(li);
-    expect((li?.children[2].__w ?? 0) - writesAtBuild).toBe(2);
+    expect((li?.children[2]?.__w ?? 0) - writesAtBuild).toBe(2);
   });
 
   it("an empty series set says so instead of showing a blank box", () => {
@@ -922,7 +924,9 @@ describe("sidebar: graph section is a launcher plus a series list, not a second 
     // Groups precede leaves: when the option list is truncated, the names that
     // survive are the ones carrying a whole subtree. Plain lexicographic order
     // is deliberately not the contract any more.
-    const isGroup = (v) => values.some((o) => o !== v && (o.startsWith(v + ".") || o.startsWith(v + "[")));
+    const isGroup = (v: string | null | undefined): boolean =>
+      typeof v === "string" &&
+      values.some((o) => typeof o === "string" && o !== v && (o.startsWith(v + ".") || o.startsWith(v + "[")));
     const firstLeaf = values.findIndex((v) => !isGroup(v));
     for (let i = 0; i < values.length && firstLeaf >= 0; i += 1) {
       if (isGroup(values[i])) {
