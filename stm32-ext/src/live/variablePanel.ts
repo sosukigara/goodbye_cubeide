@@ -182,7 +182,20 @@ const VAR_SCRIPT = `var __SEED = __VAR_SEED__;`
   + ` }`
   + ` rebuild();`
   + `}`
+  // Display cadence. The sidecar polls at 100Hz and the host CSV tail ticks
+  // every 10ms, so one paint window per poll period puts every sample on
+  // screen; the window still drains the dirty set once, so several batches
+  // arriving inside it coalesce into a single repaint.
+  + `const PAINT_INTERVAL_MS = 10;`
   + `let paintQueued = false;`
+  + `const paintNow = () => { paintQueued = false; paintDirty(); };`
+  + `function schedulePaint() {`
+  // No scheduler in this environment (the test vm): the PAINT_INTERVAL_MS
+  // window collapses to an immediate paint, and the dirty-set drain is
+  // identical, so the acceptance tests observe the same coalescing.
+  + ` if (typeof setTimeout !== 'function') { paintNow(); return; }`
+  + ` setTimeout(paintNow, PAINT_INTERVAL_MS);`
+  + `}`
   + `const dirty = Object.create(null);`
   + `function onSamples(arr) {`
   + ` for (let i = 0; i < arr.length; i += 1) {`
@@ -193,8 +206,7 @@ const VAR_SCRIPT = `var __SEED = __VAR_SEED__;`
   + ` }`
   + ` if (paintQueued) return;`
   + ` paintQueued = true;`
-  + ` if (typeof setTimeout !== 'function') { paintQueued = false; paintDirty(); return; }`
-  + ` setTimeout(() => { paintQueued = false; paintDirty(); }, 100);`
+  + ` schedulePaint();`
   + `}`
   // The picker is a plain input: completion is the host QuickPick
   // (var-pick), because the in-page datalist rendered at odd offsets.
@@ -213,10 +225,23 @@ const VAR_SCRIPT = `var __SEED = __VAR_SEED__;`
   + ` }`
   + ` return out;`
   + `}`
+  // name -> <tr> for every row currently in tbody. paintDirty resolves one row
+  // per dirty name, so at 100Hz a linear scan over tbody.children would cost
+  // dirty x rows getAttribute calls (~74M/s at 220 names x 3,380 rows).
+  // addRow / clearRows are the only writers: every row enters through
+  // addRow and leaves through rebuild()'s tbody clear.
+  + `const rowIndex = new Map();`
+  + `function addRow(tr) {`
+  + ` rowIndex.set(tr.getAttribute('data-name') || '', tr);`
+  + ` tbody.appendChild(tr);`
+  + `}`
+  + `function clearRows() {`
+  + ` rowIndex.clear();`
+  + ` tbody.textContent = '';`
+  + `}`
   + `function rowFor(name) {`
-  + ` const kids = tbody ? tbody.children : [];`
-  + ` for (let i = 0; i < kids.length; i += 1) if (kids[i].getAttribute('data-name') === name) return kids[i];`
-  + ` return null;`
+  + ` const tr = rowIndex.get(name);`
+  + ` return tr === undefined ? null : tr;`
   + `}`
   + `function isNoise(n) {`
   + ` return npIsNoise(n);`
@@ -235,10 +260,10 @@ const VAR_SCRIPT = `var __SEED = __VAR_SEED__;`
   + ` rebuildGen += 1;`
   + ` const gen = rebuildGen;`
   + ` if (!tbody) return;`
-  + ` tbody.textContent = '';`
+  + ` clearRows();`
   + ` const leafKeys = Array.from(V.types.keys()).filter((k) => !isNoise(k));`
   + ` rebuildGroupCounts(leafKeys);`
-  + ` for (let i = 0; i < V.order.length; i += 1) tbody.appendChild(mkRow(V.order[i]));`
+  + ` for (let i = 0; i < V.order.length; i += 1) addRow(mkRow(V.order[i]));`
   + ` paintAll();`
   + ` const rest = npCandidates(leafKeys).filter((n) => !V.watched[n]);`
   + ` appendRowsChunked(rest, 0, gen);`
@@ -246,7 +271,7 @@ const VAR_SCRIPT = `var __SEED = __VAR_SEED__;`
   + `function appendRowsChunked(list, i, gen) {`
   + ` if (gen !== rebuildGen || !tbody) return;`
   + ` const end = Math.min(list.length, i + 200);`
-  + ` for (let k = i; k < end; k += 1) tbody.appendChild(mkRow(list[k]));`
+  + ` for (let k = i; k < end; k += 1) addRow(mkRow(list[k]));`
   + ` if (end < list.length) {`
   + `  if (typeof setTimeout !== 'function') { appendRowsChunked(list, end, gen); return; }`
   + `  setTimeout(() => appendRowsChunked(list, end, gen), 0);`

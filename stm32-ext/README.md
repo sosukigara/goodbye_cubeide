@@ -81,7 +81,7 @@ code --install-extension stm32-ext-*.vsix
 
 表示したら `Developer: Reload Window`。
 
-**設定ファイルは触らなくて構いません。** `stm32ext.probe` / `interface` / `resetMode` / `pollHz` は既定値（ST-LINK / SWD / connect-under-reset / 50Hz）で動きます。ST-LINK 以外を使うときだけ設定してください。
+**設定ファイルは触らなくて構いません。** `stm32ext.probe` / `interface` / `resetMode` / `pollHz` は既定値（ST-LINK / SWD / connect-under-reset / 100Hz）で動きます。ST-LINK 以外を使うときだけ設定してください。
 
 ### 動かないとき
 
@@ -97,7 +97,7 @@ code --install-extension stm32-ext-*.vsix
 
 **3. 書き込む** — 「ビルドして書込」なら 2 と続きます。確認ダイアログで承認すると、検証付きで書き込み、ターゲットがリセットされます。
 
-**4. 変数を見てグラフにする** — 「監視開始」で 50Hz 開始。「変数追加」か表の行の「+」で監視する変数を選びます。グラフは「グラフ」セクションの「グラフを開く」でエディタ領域にひらきます（**ビルド前でもひらけます**。開いてからビルドすれば型が届いた時点で描画されます）。
+**4. 変数を見てグラフにする** — 「監視開始」で 100Hz 開始。「変数追加」か表の行の「+」で監視する変数を選びます。グラフは「グラフ」セクションの「グラフを開く」でエディタ領域にひらきます（**ビルド前でもひらけます**。開いてからビルドすれば型が届いた時点で描画されます）。
 
 初回は CubeIDE が ST-LINK を掴んでいると、書き込みも監視も失敗します（`DEV_CONNECT_ERR`）。CubeIDE を完全に終了してから再実行してください。
 
@@ -114,7 +114,7 @@ code --install-extension stm32-ext-*.vsix
 | グラフ | 系列の追加/削除と現在値の一覧。「グラフを開く」でエディタ領域にグラフパネルがひらきます |
 | ログ | 監視セッションのログ。フィルタ・消去・自動スクロール |
 
-webview の HTML は起動時に 1 度だけ設定され、以降はメッセージだけで差分更新されます（50Hz 監視中でも入力欄やフォーカス、表が消えません）。
+webview の HTML は起動時に 1 度だけ設定され、以降はメッセージだけで差分更新されます（100Hz 監視中でも入力欄やフォーカス、表が消えません）。
 
 ## 機能
 
@@ -183,7 +183,7 @@ webview の HTML は起動時に 1 度だけ設定され、以降はメッセー
 | `stm32ext.probe` | `ST-LINK` / `J-LINK` | `ST-LINK` | プローブ種別（pyOCD 経路では未使用） |
 | `stm32ext.interface` | `SWD` / `JTAG` | `SWD` | デバッグインターフェース（CubeProgrammer 経路の `port=` になる） |
 | `stm32ext.resetMode` | `connect-under-reset` / `software-reset` / `hardware-reset` / `core-reset` / `none` | `connect-under-reset` | リセット戦略。pyOCD では `connect-under-reset` → `--connect under-reset`、`none` → `--no-reset` |
-| `stm32ext.pollHz` | number, 1–200 | `50` | Live のポーリング周波数 |
+| `stm32ext.pollHz` | number, 1–200 | `100` | Live のポーリング周波数 |
 | `stm32ext.uiFontPx` | number, 12–16 | `15` | サイドバーの基本文字サイズ(px)。操作ボタンのタップ領域と値列/操作列の幅はこれに追従します。上限の 16px は、300px のサイドバーで変数名の意味のある部分が読める限界です（実測で名前列は約 11 文字。20px では 5 文字しか入らず `req…` になります）。変更後は `Developer: Reload Window`（または再起動）が必要です |
 | `stm32ext.autoSetup` | boolean | `true` | 起動時に不足ツールを自動導入します。拡張ストレージ内に専用 venv を作り `ninja` / `pyocd` / `pyelftools` を pip で入れます。`arm-none-eabi-gcc` と `python3` は自動導入の対象外です。`false` にすると導入せず不足の通知だけが出ます |
 

@@ -953,7 +953,7 @@ export class LivePanelProvider {
     this.tailCollected = 0;
     this.lastDropReport = 0;
     const checked = readSettings();
-    const hz = checked.ok ? checked.value.pollHz : 50;
+    const hz = checked.ok ? checked.value.pollHz : 100;
     this.postStatus("starting", catalogMode
       ? `監視を開始します (${hz}Hz、カタログモード: DebugGlobalなし)`
       : `監視を開始します (${hz}Hz)`);
@@ -1165,12 +1165,13 @@ export class LivePanelProvider {
       this.postStatus("error", `監視が終了しました (${how}) — STM32 ログを確認してください`,
         "「再接続」で再開できます");
     });
-    // Display refresh is fixed at 10fps (100ms): the sidecar still polls at
-    // pollHz and the CSV keeps every row, but a human cannot read 40 table
-    // rewrites/s and each postMessage fans out to 3 webviews. The old
-    // 25ms interval at 100Hz posted ~387 rows x 40/s; with coalescing below
-    // one tick carries at most N rows (one per watched name) x 10/s.
-    const tailMs = 100;
+    // Display refresh is fixed at 100Hz (10ms), one tick per poll period: the
+    // sidecar polls at pollHz (default 100) and the panel paints every 10ms,
+    // so a value reaches the table in the poll period it was read in. The old
+    // 100ms tick showed 1 sample in 10 and lagged the wire by a tenth of a
+    // second. Coalescing below still bounds one tick to N rows (one per
+    // watched name), and each postMessage fans out to 3 webviews.
+    const tailMs = 10;
     this.tailTimer = setInterval(() => {
       void this.tailOnce();
     }, tailMs);
@@ -2622,7 +2623,7 @@ class SidebarProvider implements vscode.WebviewViewProvider {
       elfPath: b.elfPath ?? "",
       flashProgress: this.flashProgress,
       flashResult: this.flashResult,
-      liveHz: checked.ok ? checked.value.pollHz : 50,
+      liveHz: checked.ok ? checked.value.pollHz : 100,
       liveConnected: lp.connected,
       liveSource: lp.elfPath,
       liveDrop: this.liveDrop,

@@ -109,6 +109,67 @@ interface Panel {
   el(testid: string): StubEl;
 }
 
+/**
+ * Hand-driven setTimeout. The panel throttles its repaint with setTimeout, and
+ * a real timer would make the cadence assertions either flaky or slow, so the
+ * tests own the clock: advance(ms) runs exactly the callbacks due within that
+ * window, oldest deadline first (ties broken by scheduling order), which is
+ * what the real event loop does.
+ */
+export interface FakeClock {
+  /** Delay (ms) of every callback scheduled so far, in scheduling order. */
+  readonly scheduled: number[];
+  /** Run every callback due within the next `ms`, then park the clock there. */
+  advance(ms: number): void;
+  /** Callbacks still waiting to run. */
+  pending(): number;
+}
+
+interface FakeClockImpl extends FakeClock {
+  setTimeout(fn: () => void, ms: number): number;
+}
+
+function fakeClock(): FakeClockImpl {
+  let now = 0;
+  let seq = 0;
+  const queue: { at: number; seq: number; fn: () => void }[] = [];
+  const scheduled: number[] = [];
+  return {
+    scheduled,
+    setTimeout(fn: () => void, ms: number): number {
+      const delay = Number(ms);
+      seq += 1;
+      scheduled.push(Number.isFinite(delay) ? delay : 0);
+      queue.push({ at: now + (Number.isFinite(delay) ? delay : 0), seq, fn });
+      return seq;
+    },
+    advance(ms: number): void {
+      const end = now + ms;
+      for (;;) {
+        let best = -1;
+        for (let i = 0; i < queue.length; i += 1) {
+          const t = queue[i] as { at: number; seq: number; fn: () => void };
+          if (t.at > end) continue;
+          if (best < 0) {
+            best = i;
+            continue;
+          }
+          const b = queue[best] as { at: number; seq: number; fn: () => void };
+          if (t.at < b.at || (t.at === b.at && t.seq < b.seq)) best = i;
+        }
+        if (best < 0) break;
+        const [t] = queue.splice(best, 1);
+        now = (t as { at: number; seq: number; fn: () => void }).at;
+        (t as { at: number; seq: number; fn: () => void }).fn();
+      }
+      now = end;
+    },
+    pending(): number {
+      return queue.length;
+    },
+  };
+}
+
 function scriptOf(html: string): string {
   const m = /<script>([\s\S]*?)<\/script>/.exec(html);
   if (m === null) {
@@ -117,7 +178,17 @@ function scriptOf(html: string): string {
   return m[1] ?? "";
 }
 
-function boot(watched: readonly string[] = [], stripTestid?: string): Panel {
+/**
+ * `clock` installs a fake setTimeout so the repaint throttle is observable.
+ * Without it the vm has no setTimeout at all and the shipped
+ * `typeof setTimeout !== 'function'` fallback paints synchronously — which is
+ * what every other test in this file exercises.
+ */
+function boot(
+  watched: readonly string[] = [],
+  stripTestid?: string,
+  clock?: FakeClockImpl,
+): Panel {
   // mount(webview) is called with NO watched-list argument, so the default
   // seed ([]) is what the product boots with.
   const html = variablePanelHtml(watched);
@@ -169,6 +240,7 @@ function boot(watched: readonly string[] = [], stripTestid?: string): Panel {
     // a webview global, not an ECMAScript built-in, so the vm must supply it
     TextDecoder,
     console,
+    ...(clock === undefined ? {} : { setTimeout: clock.setTimeout }),
   };
   const windowStub = {
     addEventListener(t: string, f: (ev: unknown) => void): void {
@@ -617,5 +689,97 @@ describe("variable panel paint cost", () => {
     expect(p.valueOf("sig0001")).toBe("3753");
     expect(hiddenOf(p, "sig0001")).toBe("0");
     expect(hiddenOf(p, "sig0002")).toBe("1");
+  });
+});
+
+describe("variable panel 100Hz display cadence", () => {
+  it("repaints a sample batch 10ms after it arrives, not 100ms", () => {
+    // The panel is the display surface for a 100Hz sidecar: the host tail tick
+    // and this paint throttle both sit at 10ms, so a value is on screen one
+    // poll period after the read. At the old 100ms throttle the table showed
+    // at most 10 of the 100 samples/s and the display lagged a full tenth of
+    // a second behind the wire.
+    const clock = fakeClock();
+    const p = boot([], undefined, clock);
+    p.post(types({ "sys.loop_hz": LEAF() }));
+    p.post({ kind: "live-watchlist", names: ["sys.loop_hz"] });
+    p.post({ kind: "live-sample", samples: [sample("sys.loop_hz", "0x00000ea7", 0)] });
+
+    expect(clock.scheduled).toEqual([10]);
+    // Nothing painted yet at 9ms: the repaint is throttled, not immediate.
+    clock.advance(9);
+    expect(p.valueOf("sys.loop_hz")).toBe("-");
+    clock.advance(1);
+    expect(p.valueOf("sys.loop_hz")).toBe("3751");
+
+    // The next poll period behaves the same way.
+    p.post({ kind: "live-sample", samples: [sample("sys.loop_hz", "0x00000ea8", 10)] });
+    clock.advance(10);
+    expect(p.valueOf("sys.loop_hz")).toBe("3752");
+  });
+
+  it("coalesces the batches inside one 10ms window into a single repaint", () => {
+    // 100Hz in, 10ms out: several sample batches land inside one paint
+    // window. They must merge into one scheduled repaint (the dirty set is
+    // drained once), not one timer each.
+    const clock = fakeClock();
+    const p = boot([], undefined, clock);
+    p.post(types({ "sys.loop_hz": LEAF(), "sys.uptime": LEAF() }));
+    p.post({ kind: "live-watchlist", names: ["sys.loop_hz", "sys.uptime"] });
+    p.post({ kind: "live-sample", samples: [sample("sys.loop_hz", "0x00000ea7", 0)] });
+    p.post({ kind: "live-sample", samples: [sample("sys.uptime", "0x0000002a", 3)] });
+    p.post({ kind: "live-sample", samples: [sample("sys.loop_hz", "0x00000ea8", 7)] });
+    expect(clock.pending()).toBe(1);
+    clock.advance(10);
+    // The last value of the window wins for both rows.
+    expect(p.valueOf("sys.loop_hz")).toBe("3752");
+    expect(p.valueOf("sys.uptime")).toBe("42");
+    expect(clock.pending()).toBe(0);
+  });
+});
+
+describe("variable panel row lookup cost", () => {
+  it("resolves each dirty name with O(1) lookups, not a scan of every row", () => {
+    // Prerequisite for 100Hz: paintDirty() resolves one row per dirty name.
+    // With a linear rowFor over tbody.children, one batch costs
+    // dirty x total getAttribute('data-name') calls — ~74M/s at the real
+    // 220 names x 3,380 rows x 100Hz — which is what froze the panel.
+    // The dirty names here are deliberately NOT watched: watched rows are
+    // always rendered first, so a watched dirty row would sit at index 0 and
+    // let a linear scan pass after a single comparison.
+    const N = 1200;
+    const index: Record<string, unknown> = {};
+    for (let i = 0; i < N; i += 1) {
+      index[`sig${String(i).padStart(4, "0")}`] = LEAF();
+    }
+    const p = boot();
+    p.post(types(index));
+    p.post({ kind: "live-watchlist", names: ["sig0000"] });
+    expect(p.el("var-rows").children.length).toBe(N);
+
+    let nameLookups = 0;
+    for (const tr of p.el("var-rows").children) {
+      const orig = tr.getAttribute.bind(tr);
+      tr.getAttribute = (k: string): string | null => {
+        if (k === "data-name") nameLookups += 1;
+        return orig(k);
+      };
+    }
+
+    p.post({
+      kind: "live-sample",
+      samples: [sample(`sig${String(N - 2).padStart(4, "0")}`, "0x00000ea7", 0)],
+    });
+    p.post({
+      kind: "live-sample",
+      samples: [sample(`sig${String(N - 1).padStart(4, "0")}`, "0x0000002a", 0)],
+    });
+    // Snapshot before any assertion helper reads an attribute itself.
+    const lookups = nameLookups;
+    expect(lookups).toBe(2);
+
+    // The two rows near the END of the table still resolve and repaint.
+    expect(p.valueOf(`sig${String(N - 2).padStart(4, "0")}`)).toBe("3751");
+    expect(p.valueOf(`sig${String(N - 1).padStart(4, "0")}`)).toBe("42");
   });
 });
