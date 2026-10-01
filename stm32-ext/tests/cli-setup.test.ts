@@ -4,11 +4,10 @@
 import { describe, expect, it } from "vitest";
 import type { SpawnResult } from "../src/flash/spawn.js";
 import {
-  CLI_VENV_DIR,
-  resolveCliVenvDir,
   runSetup,
   type SetupDeps,
 } from "../src/cli/setup.js";
+import { resolveCliVenvDir } from "../src/cli/resolve.js";
 
 const VENV = "/cli-venv";
 const VENV_PY = "/cli-venv/bin/python";
@@ -113,8 +112,10 @@ describe("resolveCliVenvDir", () => {
   });
 
   it("the process default stays inside the stm32-cli data tree", () => {
-    expect(CLI_VENV_DIR).toContain("stm32-cli");
-    expect(CLI_VENV_DIR.endsWith("venv")).toBe(true);
+    // Resolved per call, so it tracks the environment the process runs under
+    // rather than the one that existed when this module was imported.
+    expect(resolveCliVenvDir()).toContain("stm32-cli");
+    expect(resolveCliVenvDir().endsWith("venv")).toBe(true);
   });
 });
 

@@ -31,9 +31,33 @@ export const RESOLVE_EXIT_CODE = 2;
 /** Wire stage for every refusal from this module. */
 export const RESOLVE_STAGE = "resolve" as const;
 
-/** CLI-owned venv; `setup` (not this module) is the only writer. */
-export function defaultCliVenvDir(): string {
-  return join(homedir(), ".local", "share", "stm32-cli", "venv");
+/**
+ * The one place the CLI venv directory is spelled: `~/.local/share/stm32-cli/
+ * venv`, or `$XDG_DATA_HOME/stm32-cli/venv` when XDG_DATA_HOME is set and
+ * non-blank (what the README promises).
+ *
+ * WHY this has exactly one spelling and is resolved per call, not cached: a
+ * second answer here is the S2-2 bug — `setup` reported ok:true after
+ * pip-installing under $XDG_DATA_HOME while every read command looked under
+ * ~/.local, found no interpreter, and silently ran on the system python3 with
+ * no pyocd. An import-time const fails the same way for any process whose
+ * environment is set after module load.
+ *
+ * Deliberately NOT the extension's venv (extension.ts provisions one under
+ * VSCode globalStorage): a standalone `stm32` has no ExtensionContext and must
+ * work with the extension uninstalled or `autoSetup` off, and needs no ninja.
+ *
+ * Nothing outside this tree is ever created; `setup` is the only writer.
+ */
+export function resolveCliVenvDir(
+  env: NodeJS.ProcessEnv = process.env,
+  home: string = homedir(),
+): string {
+  const xdg = env["XDG_DATA_HOME"];
+  if (xdg !== undefined && xdg.trim() !== "") {
+    return join(xdg, "stm32-cli", "venv");
+  }
+  return join(home, ".local", "share", "stm32-cli", "venv");
 }
 
 /** `resolve` op waits at most 60s (interactive CLI budget, not the DAP 300s). */
@@ -310,7 +334,7 @@ export async function resolveSymbol(
     return fail("missing symbol name: pass the dotted variable name to resolve");
   }
   const spawnWorker = deps?.spawnWorker ?? defaultSpawnWorker;
-  const venvDir = deps?.venvDir ?? defaultCliVenvDir();
+  const venvDir = deps?.venvDir ?? resolveCliVenvDir();
   const script = deps?.probeOpScript ?? defaultProbeOpScript();
   const timeoutMs = deps?.timeoutMs ?? RESOLVE_TIMEOUT_MS;
   const python = sidecarPython(venvDir, process.platform, deps?.pythonExists ?? existsSync);

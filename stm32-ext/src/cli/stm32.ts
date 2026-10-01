@@ -19,10 +19,10 @@ import { gateWrite } from "./policy.js";
 import { checkPreflight, type PreflightVerdict } from "./preflight.js";
 import {
   argValue,
-  defaultCliVenvDir,
   defaultProbeOpScript,
   RESOLVE_TIMEOUT_MS,
   resolveCliPaths,
+  resolveCliVenvDir,
   resolveSymbol,
 } from "./resolve.js";
 import { runSetup, type SetupResult } from "./setup.js";
@@ -183,7 +183,7 @@ export async function main(argv: readonly string[], deps?: CliDeps | undefined):
   };
 
   const spawnWorker = deps?.spawnWorker ?? defaultSpawnWorker;
-  const venvDir = deps?.venvDir ?? defaultCliVenvDir();
+  const venvDir = deps?.venvDir ?? resolveCliVenvDir();
   const script = deps?.probeOpScript ?? defaultProbeOpScript();
   const python = sidecarPython(venvDir, process.platform);
   const mock = argv.includes("--mock");

@@ -1,10 +1,14 @@
-// CLI explicit setup: install pyocd + pyelftools into a CLI-owned venv.
+// CLI explicit setup: install pyocd + pyelftools into the CLI-owned venv.
 //
 // WHY A CLI-OWNED VENV (measured, not assumed): this machine has no pyocd in
 // the system python3, `pip install --user` is refused by PEP 668 on current
 // Debian/Ubuntu, and the extension's venv lives inside VSCode's
 // globalStorageUri, which a standalone CLI cannot and must not read. So the
-// CLI keeps its own venv under the user's data dir and nothing else.
+// CLI keeps its own venv under the user's data dir and nothing else — which is
+// why `resolveCliVenvDir` (resolve.ts) spells that path once for the whole CLI
+// and this module, being the only writer, reads that one answer rather than
+// repeating it. A second spelling here is what let `setup` install into a
+// directory no other command ever looked at.
 //
 // What this module NEVER does, by construction:
 // - it never touches the system site-packages (installs go through the venv's
@@ -19,8 +23,6 @@
 // tests never create a real venv and never run a real pip install.
 
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import {
   ensureVenv,
   installPackages,
@@ -32,27 +34,7 @@ import {
   type CommandRunner,
 } from "../env/venv.js";
 import { spawnCli } from "../flash/spawn.js";
-
-/**
- * The CLI-owned venv directory: `~/.local/share/stm32-cli/venv`, or
- * `$XDG_DATA_HOME/stm32-cli/venv` when XDG_DATA_HOME is set and non-blank.
- * Nothing outside this tree is ever created. Same `join(homedir(), ...)`
- * resolution style as the other CLI path defaults (cf. policy.ts,
- * resolve.ts); the XDG branch only redirects the base.
- */
-export function resolveCliVenvDir(
-  env: NodeJS.ProcessEnv = process.env,
-  home: string = homedir(),
-): string {
-  const xdg = env["XDG_DATA_HOME"];
-  if (xdg !== undefined && xdg.trim() !== "") {
-    return join(xdg, "stm32-cli", "venv");
-  }
-  return join(home, ".local", "share", "stm32-cli", "venv");
-}
-
-/** The CLI-owned venv directory for this process. */
-export const CLI_VENV_DIR: string = resolveCliVenvDir();
+import { resolveCliVenvDir } from "./resolve.js";
 
 /** Tools the setup command manages, with the module each is probed by. */
 const SETUP_TOOLS = [
@@ -65,7 +47,7 @@ const SETUP_TOOLS = [
 ] as const;
 
 export interface SetupDeps {
-  /** Defaults to CLI_VENV_DIR. Never a VSCode storage path. */
+  /** Defaults to resolveCliVenvDir(). Never a VSCode storage path. */
   readonly venvDir?: string | undefined;
   /** Defaults to the real spawn (via spawnCli). Tests stub this. */
   readonly run?: CommandRunner | undefined;
@@ -129,7 +111,7 @@ async function importProbe(
  *   interpreter will continue to be used, instead of blocking.
  */
 export async function runSetup(deps?: SetupDeps | undefined): Promise<SetupResult> {
-  const venvDir = deps?.venvDir ?? CLI_VENV_DIR;
+  const venvDir = deps?.venvDir ?? resolveCliVenvDir();
   const run = deps?.run ?? spawnCli;
   const platform = deps?.platform ?? process.platform;
   const exists = deps?.exists ?? existsSync;
