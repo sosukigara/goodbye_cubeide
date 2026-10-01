@@ -1068,16 +1068,7 @@ describe("sidebar: graph section is a launcher plus a series list, not a second 
 });
 
 
-describe("parseSidebarMessage: new tree messages", () => {
-  it("accepts live-add and live-remove-names with their name lists", () => {
-    expect(parseSidebarMessage({ kind: "live-add", names: ["periph.a", "periph.b"] }))
-      .toEqual({ kind: "live-add", dir: "", name: "", value: "", names: ["periph.a", "periph.b"] });
-    expect(parseSidebarMessage({ kind: "live-remove-names", names: ["periph"] }))
-      .toEqual({ kind: "live-remove-names", dir: "", name: "", value: "", names: ["periph"] });
-    expect(parseSidebarMessage({ kind: "live-add", names: [] })).toBeNull();
-    expect(parseSidebarMessage({ kind: "live-remove-names", names: "periph" })).toBeNull();
-  });
-
+describe("parseSidebarMessage: the messages the sidebar still sends", () => {
   it("accepts the log controls", () => {
     expect(parseSidebarMessage({ kind: "log-clear" })?.kind).toBe("log-clear");
     expect(parseSidebarMessage({ kind: "log-filter", text: "drop" })?.name).toBe("drop");
@@ -1093,8 +1084,14 @@ describe("parseSidebarMessage: new tree messages", () => {
     expect(parseSidebarMessage({ kind: "var-pick", query: 7 })).toBeNull();
   });
 
-  it("keeps the four-field shape for every pre-existing kind", () => {
-    expect(Object.keys(parseSidebarMessage({ kind: "live-write", name: "a", value: "1" }) as object))
+  it("keeps the four-field shape for every kind that carries no extra field", () => {
+    // The rows' live-write / live-add / live-remove-names are gone with the
+    // table that sent them; the write and watch surfaces are the variable tab
+    // (var-write / var-add / var-remove) and the host picker (var-pick).
+    expect(Object.keys(parseSidebarMessage({ kind: "project-select", dir: "/fw/a" }) as object))
       .toEqual(["kind", "dir", "name", "value"]);
+    expect(parseSidebarMessage({ kind: "live-write", name: "a", value: "1" })).toBeNull();
+    expect(parseSidebarMessage({ kind: "live-add", names: ["periph.a"] })).toBeNull();
+    expect(parseSidebarMessage({ kind: "live-remove-names", names: ["periph"] })).toBeNull();
   });
 });

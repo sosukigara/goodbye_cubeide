@@ -2593,15 +2593,6 @@ class SidebarProvider implements vscode.WebviewViewProvider {
       case "live-add-watch":
         await this.deps.livePanel.handleLiveAction("add-watch");
         return;
-      case "live-add":
-        await this.deps.livePanel.handleLiveAction("add-names", (msg.names ?? []).join(","));
-        return;
-      case "live-write":
-        await this.deps.livePanel.handleLiveAction("write", msg.name, msg.value);
-        return;
-      case "live-remove-names":
-        await this.deps.livePanel.handleLiveAction("remove-names", [msg.name, ...(msg.names ?? [])].join(","));
-        return;
       case "log-clear":
         // The host keeps a tail for the next bootstrap; without clearing it
         // here the "erased" log would come back on the next state push.
@@ -2617,17 +2608,12 @@ class SidebarProvider implements vscode.WebviewViewProvider {
         // single place that also registers the watch.
         this.deps.pickGraphVariables(msg.query ?? "");
         return;
-      case "graph-add":
       case "graph-remove":
         // The watchlist half moved into GraphPanelProvider.addSeries /
         // removeSeries. It used to be repeated here, which is how the graph
         // panel ended up able to add a legend entry that nothing ever polls.
         // Both surfaces now go through one implementation.
-        if (msg.kind === "graph-add") {
-          this.deps.graphPanel.addSeries(msg.name);
-        } else {
-          this.deps.graphPanel.removeSeries(msg.name);
-        }
+        this.deps.graphPanel.removeSeries(msg.name);
         this.pushState();
         return;
     }
