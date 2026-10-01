@@ -21,6 +21,8 @@ import { spawnCli } from "./flash/spawn";
 import { runPyocdFlash } from "./flash/pyocd";
 import {
   decideWrite,
+  isMotorDrivePath,
+  MOTOR_DRIVE_WARNING,
 } from "./live/allowlist";
 import {
   buildWriteRequest,
@@ -43,6 +45,7 @@ import {
 import {
   assertCsvHeader,
   coalesceSamples,
+  decodeValue,
   dropStats,
   encodeWriteValue,
   formatCsv,
@@ -1653,11 +1656,26 @@ export class LivePanelProvider {
       return;
     }
     const bits = encoded.bits;
-    // decideWrite is pure (no side effects — verdict + audit string only),
-    // so check range/resolution with confirmed:true as the normal path: a
-    // valid write commits on Enter with no dialog.
+    const hex = `0x${BigInt(bits).toString(16).padStart(sym.size * 2, "0")}`;
+    // The gate the docs promise: modal, so it cannot be clicked away, and it
+    // shows the decoded current value beside the new one (README 149/207). The
+    // motor-drive warning is the CLI's own predicate and constant, so both
+    // front ends warn identically instead of each inventing a wording.
+    const choice = await vscode.window.showWarningMessage(
+      `${isMotorDrivePath(name) ? `${MOTOR_DRIVE_WARNING}\n\n` : ""}` +
+      `${name}@${sym.address} (${sym.size} バイト) に書き込みます\n` +
+      `現在の値: ${this.currentValueText(name)}\n` +
+      `新しい値: ${value} → ${hex}`,
+      { modal: true },
+      "書き込む",
+    );
+    const confirmed = choice === "書き込む";
+    // decideWrite is pure (no side effects — verdict + audit string only), so
+    // the answer is the ONLY thing that separates a write from a refusal: a
+    // dismissed dialog must reach it as confirmed=false, never as a hardcoded
+    // true.
     const verdict = decideWrite(
-      { target: { name, address: sym.address, size: sym.size }, value: bits, confirmed: true },
+      { target: { name, address: sym.address, size: sym.size }, value: bits, confirmed },
       { base: Number.parseInt(sym.address, 16), size: sym.size },
       stamp,
     );
@@ -1671,10 +1689,10 @@ export class LivePanelProvider {
     // comes back on stdout. The sidecar re-checks the write against the
     // extent this request declares, then reads the value back to confirm.
     this.channel.appendLine(verdict.audit);
-    // No dialog stands between validation and dispatch, so the output channel
-    // is the only record of what was written: decoded text and hex together.
+    // The dialog was shown and answered, so the output channel is the record of
+    // what was actually moved: decoded text and hex together.
     this.channel.appendLine(
-      `[live-write] ${stamp} WRITE ${name}@${sym.address} size=${sym.size} value=${value} hex=0x${BigInt(bits).toString(16).padStart(sym.size * 2, "0")}`);
+      `[live-write] ${stamp} WRITE ${name}@${sym.address} size=${sym.size} value=${value} hex=${hex}`);
     const result = await this.sendWrite(sym.address, sym.size, bits);
     if (result.ok) {
       const note = result.note === undefined ? "" : ` — ${result.note}`;
@@ -1688,6 +1706,23 @@ export class LivePanelProvider {
     done(`書き込み失敗: ${reason}`, false);
   }
 
+  /**
+   * Decoded newest value for `name`, for the write dialog's 現在の値 line.
+   *
+   * Read backwards through the sample ring (the tail is what the table shows)
+   * and decoded with the same decoder as the table, so the dialog and the cell
+   * can never disagree. A name nothing has been sampled for yet says so rather
+   * than showing a raw hex the user cannot read against the decoded new value.
+   */
+  private currentValueText(name: string): string {
+    for (let i = this.samples.length - 1; i >= 0; i -= 1) {
+      const s = this.samples[i];
+      if (s?.name === name) {
+        return decodeValue(s.value, this.leafMeta.get(name));
+      }
+    }
+    return "(まだ値を取得していません)";
+  }
   /** One write over the running sidecar's stdin, answered on its stdout. */
   private async sendWrite(address: string, size: number, value: string): Promise<WriteResult> {
     const stdin = this.child?.stdin;

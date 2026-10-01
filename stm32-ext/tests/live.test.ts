@@ -206,36 +206,42 @@ describe("allowlist writes", () => {
     }
   });
 
-  it("writeFlow commits on Enter with no modal: confirmed:true is the normal path, extent failures never dispatch", () => {
-    // A memory write from the Variables tab goes straight through to the
-    // sidecar after validation — no showWarningMessage in between. decideWrite
-    // stays pure (verdict + audit string only), so confirmed:true is the
-    // normal path and a write that does not fit its extent never dispatches.
+  it("writeFlow gates every dispatch behind a modal and hands decideWrite the user's answer", () => {
+    // A memory write from the Variables tab used to commit on Enter: no
+    // showWarningMessage between validation and sendWrite, and a hardcoded
+    // `confirmed: true` handed to decideWrite. decideWrite stays pure (verdict
+    // + audit string only), so the policy is only as good as the answer the
+    // caller feeds it — the host now has to ask, and has to pass what it got.
     const req = { target: { name: "sys.loop_hz", address: "0x200000bc", size: 4 }, value: "0x1" };
-    const probe = decideWrite({ ...req, confirmed: true }, RANGE, STAMP);
-    expect(probe.ok).toBe(true); // a target that fits its extent dispatches with no dialog
+    const refused = decideWrite({ ...req, confirmed: false }, RANGE, STAMP);
+    expect(refused.ok).toBe(false); // a dismissed dialog refuses
+    if (!refused.ok) {
+      expect(refused.reason).toMatch(/confirmation/);
+    }
+    expect(decideWrite({ ...req, confirmed: true }, RANGE, STAMP).ok).toBe(true);
     const overruns = decideWrite(
       { target: { name: "evil", address: "0x20001000", size: 4 }, value: "0x1", confirmed: true },
       RANGE,
       STAMP,
     );
     expect(overruns.ok).toBe(false); // a write that does not fit never reaches the sidecar
-    // Pin the new behaviour in the host: writeFlow shows no modal, still
-    // dispatches through sendWrite, and logs a WRITE audit line (decoded
-    // text + hex) since the output channel is the only remaining record.
+    // Pin the host shape: one modal inside writeFlow, no hardcoded confirmation,
+    // still dispatching through sendWrite and still logging the WRITE audit
+    // line (decoded text + hex) the dialog now sits in front of.
     const start = source.indexOf("private async writeFlow");
     const end = source.indexOf("/** One write over the running sidecar's stdin", start);
     const writeFlow = source.slice(start, end === -1 ? undefined : end);
     expect(start).not.toBe(-1);
-    expect(writeFlow).not.toContain("showWarningMessage");
+    expect(writeFlow).toMatch(/showWarningMessage\([\s\S]*?\{ modal: true \}/);
+    expect(writeFlow).not.toContain("confirmed: true");
     expect(writeFlow).toContain("sendWrite");
     expect(writeFlow).toContain("[live-write]");
     expect(writeFlow).toMatch(/WRITE \$\{name\}@\$\{sym\.address\}/);
   });
 
-  it("the modals that must survive still call showWarningMessage", () => {
-    // The live-write modal is gone, and this removal must not silently
-    // spread: probe-conflict and flash confirmations stay modal.
+  it("the modals unrelated to the write gate are untouched", () => {
+    // Probe-conflict, force-stop, force-reclaim and both flash confirmations are
+    // separate gates; the write dialog must not have replaced or renamed them.
     expect(source).toContain("プローブ競合の可能性");
     expect(source).toContain("強制終了しますか?");
     expect(source).toContain("強制的に取り直しますか?");
