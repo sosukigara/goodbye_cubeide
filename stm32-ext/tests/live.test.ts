@@ -25,7 +25,6 @@ import {
   CSV_HEADER,
   dropStats,
   formatCsv,
-  passesDropBudget,
 } from "../src/live/poller.js";
 
 // The extent a resolved symbol occupies. There is no DebugGlobal window any
@@ -102,10 +101,10 @@ describe("poller contracts", () => {
   });
 
 
-  it("drop budget: <1% passes, >=1% fails", () => {
-    expect(passesDropBudget(dropStats(3000, 2999))).toBe(true); // 0.03%
-    expect(passesDropBudget(dropStats(3000, 2970))).toBe(false); // 1.0%
-    expect(passesDropBudget(dropStats(0, 0))).toBe(true);
+  it("drop rate: <1% is inside the sidecar's budget, >=1% is not", () => {
+    expect(dropStats(3000, 2999).dropRate).toBeLessThan(0.01); // 0.03%
+    expect(dropStats(3000, 2970).dropRate).toBeGreaterThanOrEqual(0.01); // 1.0%
+    expect(dropStats(0, 0).dropRate).toBe(0);
   });
 });
 

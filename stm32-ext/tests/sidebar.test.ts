@@ -72,6 +72,12 @@ describe("sidebar html", () => {
     expect(html).not.toContain('data-testid="live-add-note"');
   });
 
+  it("default state renders the current poll default, not the retired 50Hz", () => {
+    expect(SIDEBAR_PANEL_DEFAULT_STATE.liveHz).toBe(100);
+    expect(renderSidebar()).toContain('data-testid="live-hz">100Hz<');
+    expect(renderSidebar()).not.toContain("50Hz");
+  });
+
   it("has no guide paragraph or AI-flavored prose", () => {
     expect(html).not.toContain('class="guide"');
     expect(html).not.toContain("使いかた");

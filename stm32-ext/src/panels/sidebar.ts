@@ -57,7 +57,7 @@ export const SIDEBAR_PANEL_DEFAULT_STATE: SidebarState = {
   elfPath: "",
   flashProgress: "",
   flashResult: "",
-  liveHz: 50,
+  liveHz: 100,
   liveConnected: false,
   liveSource: "",
   liveDrop: "",
@@ -1184,7 +1184,7 @@ export type SidebarMessageKind =
   | "build-run" | "build-flash"
   | "flash" | "flash-retry"
   | "live-start" | "live-stop" | "live-pause" | "live-resume" | "live-reconnect"
-  | "live-export-csv" | "live-add-watch" | "live-write" | "live-remove"
+  | "live-export-csv" | "live-add-watch" | "live-write"
   | "live-add" | "live-remove-names"
   | "log-clear" | "log-filter"
   | "graph-add" | "graph-remove";
@@ -1231,9 +1231,6 @@ export function parseSidebarMessage(raw: unknown): SidebarMessage | null {
     return { kind, dir: "", name: r["name"], value: "" };
   }
   if (kind === "graph-remove" && typeof r["name"] === "string") {
-    return { kind, dir: "", name: r["name"], value: "" };
-  }
-  if (kind === "live-remove" && typeof r["name"] === "string" && r["name"] !== "") {
     return { kind, dir: "", name: r["name"], value: "" };
   }
   if (kind === "live-write" && typeof r["name"] === "string" && typeof r["value"] === "string") {

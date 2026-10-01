@@ -313,7 +313,9 @@ export async function main(argv: readonly string[], deps?: CliDeps | undefined):
       const run = deps?.setup ?? runSetup;
       const result = await run();
       emit({ op: "setup", ...result });
-      return result.ok ? 0 : 1;
+      // 2, not 1: every other host-side failure here goes through fail(),
+      // which is the documented "usage / resolve / refusal" code.
+      return result.ok ? 0 : 2;
     }
 
     default: {

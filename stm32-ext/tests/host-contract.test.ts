@@ -56,7 +56,7 @@ import {
   usbErrorSummary,
 } from "../src/live/manager.js";
 import { parseElfResolutionJson, type ElfResolution, type ResolvedSymbol } from "../src/live/elfResolver.js";
-import { assertCsvHeader, decodeValue, dropStats, formatDropSummary, passesDropBudget } from "../src/live/poller.js";
+import { assertCsvHeader, decodeValue, dropStats, formatDropSummary } from "../src/live/poller.js";
 import {
   DEFAULT_EXTRA_SIZE,
   extraArgs,
@@ -345,7 +345,7 @@ describe("D-4: header and drop accounting are live product code", () => {
   it("dropStats measures what the tail could not use", () => {
     const stats = dropStats(1000, 999);
     expect(stats.dropped).toBe(1);
-    expect(passesDropBudget(stats)).toBe(true);
+    expect(stats.dropRate).toBeCloseTo(0.001, 5);
     expect(formatDropSummary(dropStats(1000, 900))).toContain("drop_rate=10.0000%");
   });
 });

@@ -228,7 +228,7 @@ webview の HTML は起動時に 1 度だけ設定され、以降はメッセー
 
 ST-LINK は排他リソースです。VSCode の Live セッションがロック（`/tmp/stm32ext-live.lock`）を保持していると、CLI は奪わずに exit 2 + JSON エラーで**拒否**します。先に Live セッションを停止してください（保持者 pid が死んでいる stale ロックは警告のうえ続行します）。CubeIDE が起動中の場合も同様に拒否します。`setup` は opt-in であり、他のコマンドが venv を自動作成することはありません。導入先は `~/.local/share/stm32-cli/venv`（`XDG_DATA_HOME` が設定されていればそちらを尊重）です。
 
-出力の約束: **stdout は常に JSON 1 オブジェクト**（`--help` のみ例外でテキスト）なので `| jq` で処理できます。人間向けの文（確認プロンプト・監査行・ワーカーの stderr）はすべて stderr に出ます。失敗時の JSON には `stage`（`preflight` / `resolve` / `attach` / `op` のいずれか）が載り、終了コードは 0 成功・2 使用法/解決/拒否・3 プローブ不在・5 USB・6 監視対象なしです。`info` は pyocd 不在でも exit 0 で `checks.pyocd.ok=false` を報告するため、エージェントの診断の入口として使えます。
+出力の約束: **stdout は常に JSON 1 オブジェクト**（`--help` のみ例外でテキスト）なので `| jq` で処理できます。人間向けの文（確認プロンプト・監査行・ワーカーの stderr）はすべて stderr に出ます。失敗時の JSON には `stage`（`preflight` / `resolve` / `attach` / `op` のいずれか）が載り、終了コードは 0 成功・2 使用法/解決/拒否・3 プローブ不在・5 USB・6 監視対象なしです。`setup` の失敗も 2 で、成功時と同じ `SetupResult` の形（`stage` フィールドはありません）で返ります。`info` は pyocd 不在でも exit 0 で `checks.pyocd.ok=false` を報告するため、エージェントの診断の入口として使えます。
 
 トラブルシューティングの補足: ROS の `launch_testing` プラグインが壊れた環境では、素の `python3 -m pytest` が collection 前に失敗します。その場合は `npm run test:py`（`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` を設定済み）を使うか、その変数を自分で設定してください。
 

@@ -12,6 +12,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { main, type CliDeps } from "../src/cli/stm32.js";
+import type { SetupResult } from "../src/cli/setup.js";
 import { MOTOR_DRIVE_WARNING } from "../src/live/allowlist.js";
 import type { SpawnResult } from "../src/flash/spawn.js";
 
@@ -204,6 +205,35 @@ describe("stm32 ls/info", () => {
     expect(await main(["info"], deps)).toBe(0);
     expect(oneJson(cap)).toEqual(reply);
     expect(cap.requests[0]).toMatchObject({ op: "info" });
+  });
+});
+
+describe("stm32 setup", () => {
+  const result = (ok: boolean): SetupResult => ({
+    ok,
+    venvDir: "/tmp/venv",
+    python: "/tmp/venv/bin/python",
+    created: false,
+    missing: ok ? [] : ["pyocd"],
+    installed: [],
+    skipped: [],
+    detail: ok ? "already installed" : "pip install failed",
+  });
+
+  it("exits 0 and emits the report on success", async () => {
+    const { deps, cap } = harness([], { setup: async () => result(true) });
+    expect(await main(["setup"], deps)).toBe(0);
+    expect(oneJson(cap)).toMatchObject({ op: "setup", ok: true });
+    expect(cap.requests).toHaveLength(0);
+  });
+
+  it("exits 2 (documented refusal) on failure, not 1", async () => {
+    const { deps, cap } = harness([], { setup: async () => result(false) });
+    expect(await main(["setup"], deps)).toBe(2);
+    const payload = oneJson(cap);
+    expect(payload["ok"]).toBe(false);
+    expect(payload["detail"]).toBe("pip install failed");
+    expect(cap.requests).toHaveLength(0);
   });
 });
 

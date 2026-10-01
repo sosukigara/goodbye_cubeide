@@ -5,7 +5,7 @@
 
 export const CSV_HEADER = "timestamp,address,name,value";
 
-export const DEFAULT_POLL_HZ = 50;
+export const DEFAULT_POLL_HZ = 100;
 
 export interface LiveSample {
   readonly timestamp: string;
@@ -79,11 +79,6 @@ export function dropStats(expected: number, collected: number): DropStats {
     dropped,
     dropRate: expected > 0 ? dropped / expected : 0,
   };
-}
-
-/** G12 acceptance: 50Hz x 5min with <1% drops. */
-export function passesDropBudget(stats: DropStats): boolean {
-  return stats.dropRate < 0.01;
 }
 
 export function formatDropSummary(stats: DropStats): string {
