@@ -242,7 +242,7 @@ function matchCompound(el: StubEl, sel: string): boolean {
 }
 
 function matchParts(el: StubEl, parts: string[]): boolean {
-  if (!matchCompound(el, parts[parts.length - 1])) return false;
+  if (!matchCompound(el, parts[parts.length - 1]!)) return false;
   if (parts.length === 1) return true;
   const rest = parts.slice(0, -1);
   let p = el.parentNode;
@@ -266,7 +266,7 @@ function parseHtml(html: string): StubEl {
   const root = new StubEl("#root");
   const stack: StubEl[] = [root];
   let i = 0;
-  const top = (): StubEl => stack[stack.length - 1];
+  const top = (): StubEl => stack[stack.length - 1]!;
   while (i < html.length) {
     const lt = html.indexOf("<", i);
     if (lt < 0) break;
@@ -299,7 +299,7 @@ function parseHtml(html: string): StubEl {
     const are = /([\w:-]+)(?:\s*=\s*"([^"]*)")?/g;
     let am: RegExpExecArray | null;
     while ((am = are.exec(attrTxt)) !== null) {
-      el.setAttribute(am[1], decodeEntities(am[2] ?? ""));
+      el.setAttribute(am[1]!, decodeEntities(am[2] ?? ""));
     }
     if (tag === "input") el.checked = el.hasAttribute("checked");
     top().appendChild(el);

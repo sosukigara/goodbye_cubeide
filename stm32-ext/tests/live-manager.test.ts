@@ -26,8 +26,8 @@ const RES: ElfResolution = {
   hasDebugInfo: true,
   backend: "pyelftools",
   symbols: [
-    { name: "sys.loop_hz", address: "0x200000bc", offset: 0, size: 4, type: "uint32_t" },
-    { name: "sys.uptime_ms", address: "0x200000ec", offset: 48, size: 4, type: "uint32_t" },
+    { name: "sys.loop_hz", address: "0x200000bc", offset: 0, size: 4, type: "uint32_t", kind: "scalar", signed: false },
+    { name: "sys.uptime_ms", address: "0x200000ec", offset: 48, size: 4, type: "uint32_t", kind: "scalar", signed: false },
   ],
   unresolved: [],
 };
@@ -173,9 +173,9 @@ describe("expandWatchNames (struct add registers its leaves)", () => {
   const TREE_RES: ElfResolution = {
     ...RES,
     symbols: [
-      { name: "debug.target_transform.vx", address: "0x200000bc", offset: 0, size: 4, type: "float" },
-      { name: "debug.target_transform.vy", address: "0x200000c0", offset: 4, size: 4, type: "float" },
-      { name: "sys.loop_hz", address: "0x200000ec", offset: 48, size: 4, type: "uint32_t" },
+      { name: "debug.target_transform.vx", address: "0x200000bc", offset: 0, size: 4, type: "float", kind: "float", signed: false },
+      { name: "debug.target_transform.vy", address: "0x200000c0", offset: 4, size: 4, type: "float", kind: "float", signed: false },
+      { name: "sys.loop_hz", address: "0x200000ec", offset: 48, size: 4, type: "uint32_t", kind: "scalar", signed: false },
     ],
   };
   it("expands a struct group to its leaves", () => {

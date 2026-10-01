@@ -28,8 +28,11 @@ interface Harness {
   probeThrows: boolean;
   built: boolean;
   readonly calls: string[][];
-  readonly run: SetupDeps["run"];
-  readonly exists: (p: string) => boolean;
+  // Not readonly: the factory assigns these after the object literal (the
+  // harness rewires itself per scenario). `calls` stays readonly — it is only
+  // ever pushed to, never reassigned.
+  run: SetupDeps["run"];
+  exists: (p: string) => boolean;
 }
 
 /** Stateful stub: the venv "appears" once created, imports work once installed. */
@@ -239,7 +242,7 @@ describe("runSetup: win32 venv shape (no posix hardcoding)", () => {
       }
     }
     expect(h.calls.filter((c) => c[0] === "python3")).toHaveLength(1);
-    expect(h.calls.some((c) => c[0].includes("/bin/python"))).toBe(false);
+    expect(h.calls.some((c) => (c[0] ?? "").includes("/bin/python"))).toBe(false);
   });
 });
 

@@ -177,7 +177,9 @@ describe("gateWrite audit", () => {
 describe("gateWrite malformed input (assert on verdict, not on stderr)", () => {
   it("unparseable address refuses with the unresolvable-address reason, never throws", async () => {
     const c = capture({ isTTY: false });
-    let v;
+    // Explicit type: the assignment happens inside the closure below, so a
+    // bare `let v;` narrows to `never` at the use site (TS2339 on .ok/.reason/.audit).
+    let v: Awaited<ReturnType<typeof gateWrite>> | undefined;
     await expect((async () => {
       v = await gateWrite("mystery", "notahex", 4, "1", { yes: true }, c.deps);
     })()).resolves.toBeUndefined();

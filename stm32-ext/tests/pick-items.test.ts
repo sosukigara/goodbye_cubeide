@@ -65,7 +65,7 @@ function resolution(symbols: readonly ResolvedSymbol[]): ElfResolution {
     backend: "pyelftools",
     symbols,
     unresolved: [],
-    tree: MEASURE_TREE as ElfResolution["tree"],
+    tree: MEASURE_TREE as NonNullable<ElfResolution["tree"]>,
   };
 }
 

@@ -114,7 +114,9 @@ describe("flash wiring through the sidebar", () => {
 
   it("flash command carries the interface setting verbatim", () => {
     const cmd = buildFlashCommand(
-      { ...DEFAULT_FLASH_SETTINGS, probe: "J-LINK", iface: "JTAG", resetMode: "normal" },
+      // Legacy "normal" is now "software-reset": a standard post-flash reset
+      // (connect-under-reset is already the default and means halting under reset).
+      { ...DEFAULT_FLASH_SETTINGS, probe: "J-LINK", iface: "JTAG", resetMode: "software-reset" },
       { elfPath: ELF, confirmed: true },
     );
     expect(cmd).toContain("port=JTAG");

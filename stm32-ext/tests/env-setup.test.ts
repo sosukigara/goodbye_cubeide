@@ -128,9 +128,9 @@ describe("setup: running it", () => {
     expect(installed.ok).toBe(true);
     // The venv's own pip, not the system one — that is what makes this work
     // on a PEP 668 host, where `pip install --user` is refused outright.
-    expect(calls[1][0]).toBe("/v/bin/python");
+    expect(calls[1]?.[0]).toBe("/v/bin/python");
     expect(calls[1]).toContain("install");
-    expect(calls[1].slice(-2)).toEqual(["ninja", "pyocd"]);
+    expect(calls[1]?.slice(-2)).toEqual(["ninja", "pyocd"]);
   });
 
   it("reuses an existing venv instead of recreating it", async () => {
