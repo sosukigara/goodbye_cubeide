@@ -210,6 +210,28 @@ webview の HTML は起動時に 1 度だけ設定され、以降はメッセー
 
 実書き込みは、実行中のサイドカーの stdin に JSON 1 行として送り、サイドカーのポールループが 1 tick 遅延で実行します。リクエストには**ホストが解決したシンボルの範囲**（`base` / `symbolSize`）も含まれ、サイドカーは別のプロセスなのでこれを再確認してからバスに触ります。幅の小さい変数は 32 ビットの read-modify-write になるため、隣接バイトは keep-mask で保存され、書き戻し値を読み戻して結果として返します。
 
+## CLI（`stm32` コマンド）
+
+コマンドラインから実機の変数を読み書きする `stm32` コマンドです。**主な利用者は AI エージェント**であり、変数の読み取り・書き込み・値の確認を JSON 越しに行います。端末で直接叩く人間の開発者が副次的な利用者です。`package.json` の `bin` が `out/cli/stm32.js` を指すため、`npm run compile` 後に `node out/cli/stm32.js ...` で直接叩けます。
+
+| コマンド | 意味 | 例 |
+|---|---|---|
+| `info` | プローブ / pyOCD / ELF の点検（エージェントの診断の入口） | `stm32 info` |
+| `ls` | 書き込み可能な変数の一覧（`--target` は不要） | `stm32 ls --elf build-ext/firmware.elf` |
+| `get <name>` | 変数 1 個の読み取り | `stm32 get sys.loop_hz --elf build-ext/firmware.elf --target stm32g474retx` |
+| `set <name> <value>` | 変数 1 個の書き込み（確認ゲートあり） | `stm32 set drive.gain 1.25 --elf build-ext/firmware.elf --target stm32g474retx` |
+| `setup` | CLI 所有 venv への pyocd + pyelftools の導入 | `stm32 setup` |
+
+`--elf <path>` / `--target <id>` は環境変数 `STM32_ELF` / `STM32_TARGET` でも渡せます。**フラグが環境変数より優先**されます。`--target` が無いと exit 2 で拒否されます（pyOCD には明示のターゲット ID が要るため）。`--resolution <path>` は事前に作った解決済み JSON を直読し、`ls` / `get` / `set` が ELF リゾルバの再実行なしで動きます。オフライン（air-gap）環境やテストの fixture 実行用です。
+
+書き込みの確認ゲート: TTY では `y/N` プロンプト（既定 N）が出ます。パイプ経由など非 TTY では `--yes` が必須で、無いと exit 2 で拒否されます。**`--yes` は security boundary ではなく事故バリアです** — `--yes` を渡したエージェントは実際に書き込みます。書き込みの可否そのものは上の「書き込みの安全規則」が強制します（`decideWrite` が唯一の正本）。`drive` / `motor` / `current` などを含むパスの変数ではモーター駆動警告が stderr に必ず出ます。許可・拒否のすべての判断は `[live-write] ...` の監査行として stderr と `~/.local/state/stm32-cli/audit.log` に記録され、ログは末尾 5000 行に刈り込まれます。
+
+ST-LINK は排他リソースです。VSCode の Live セッションがロック（`/tmp/stm32ext-live.lock`）を保持していると、CLI は奪わずに exit 2 + JSON エラーで**拒否**します。先に Live セッションを停止してください（保持者 pid が死んでいる stale ロックは警告のうえ続行します）。CubeIDE が起動中の場合も同様に拒否します。`setup` は opt-in であり、他のコマンドが venv を自動作成することはありません。導入先は `~/.local/share/stm32-cli/venv`（`XDG_DATA_HOME` が設定されていればそちらを尊重）です。
+
+出力の約束: **stdout は常に JSON 1 オブジェクト**（`--help` のみ例外でテキスト）なので `| jq` で処理できます。人間向けの文（確認プロンプト・監査行・ワーカーの stderr）はすべて stderr に出ます。失敗時の JSON には `stage`（`preflight` / `resolve` / `attach` / `op` のいずれか）が載り、終了コードは 0 成功・2 使用法/解決/拒否・3 プローブ不在・5 USB・6 監視対象なしです。`info` は pyocd 不在でも exit 0 で `checks.pyocd.ok=false` を報告するため、エージェントの診断の入口として使えます。
+
+トラブルシューティングの補足: ROS の `launch_testing` プラグインが壊れた環境では、素の `python3 -m pytest` が collection 前に失敗します。その場合は `npm run test:py`（`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1` を設定済み）を使うか、その変数を自分で設定してください。
+
 ## トラブルシューティング
 
 | 症状 | 原因 | 対処 |

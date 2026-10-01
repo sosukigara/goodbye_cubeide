@@ -54,6 +54,9 @@
     "onCommand:stm32ext.openBuildDiag"
   ],
   "main": "./out/extension.js",
+  "bin": {
+    "stm32": "./out/cli/stm32.js"
+  },
   "scripts": {
     "compile": "tsc -p ./",
     "typecheck": "tsc --noEmit",
