@@ -550,3 +550,72 @@ describe("variable panel write feedback", () => {
     expect(writeInputOf(p, "sys.uptime").value).toBe("zz");
   });
 });
+
+describe("variable panel paint cost", () => {
+  it("a small sample batch touches only dirty rows, not the whole table", () => {
+    // Regression: paintAll() repainted EVERY row on every 100ms sample
+    // batch (4 DOM writes + decode() per row: ~13,500 mutations per paint
+    // at the real 3,380-symbol scale), saturating the webview main thread
+    // so values appeared frozen. A 2-sample batch must cost ~2 rows,
+    // not all N rows. Flat names keep the row set leaf-only (no groups).
+    const N = 3000;
+    const index: Record<string, unknown> = {};
+    for (let i = 0; i < N; i += 1) {
+      index[`sig${String(i).padStart(4, "0")}`] = LEAF();
+    }
+    const p = boot();
+    p.post(types(index));
+    p.post({ kind: "live-watchlist", names: ["sig0001", "sig0002"] });
+    expect(p.el("var-rows").children.length).toBe(N);
+
+    // Spy on the REAL cost driver: value-cell textContent writes and
+    // per-row data-hidden writes. A cosmetic fix that still walks every
+    // row (e.g. only skipping unchanged textContent) still fails on
+    // hiddenWrites, which the old paintAll sets unconditionally per row.
+    let valueWrites = 0;
+    let hiddenWrites = 0;
+    for (const tr of p.el("var-rows").children) {
+      const vcell = tr.children[1] as StubEl;
+      let cur = vcell.textContent;
+      Object.defineProperty(vcell, "textContent", {
+        configurable: true,
+        get: () => cur,
+        set: (v: string) => {
+          valueWrites += 1;
+          cur = String(v);
+        },
+      });
+      const origSet = tr.setAttribute.bind(tr);
+      tr.setAttribute = (k: string, v: string): void => {
+        if (k === "data-hidden") {
+          hiddenWrites += 1;
+        }
+        origSet(k, v);
+      };
+    }
+
+    p.post({
+      kind: "live-sample",
+      samples: [sample("sig0001", "0x00000ea7", 0), sample("sig0002", "0x00000ea8", 0)],
+    });
+
+    // Values still track the wire...
+    expect(p.valueOf("sig0001")).toBe("3751");
+    expect(p.valueOf("sig0002")).toBe("3752");
+    expect(p.valueOf("sig0003")).toBe("-");
+    // ...but the paint cost scales with the 2 changed rows, not all 3000.
+    expect(valueWrites).toBeLessThanOrEqual(10);
+    expect(hiddenWrites).toBe(0);
+
+    // The active search filter still applies on query change, and later
+    // sample batches preserve it without a full filter pass.
+    p.el("var-search").value = "sig0001";
+    p.el("var-search").fire("input");
+    expect(hiddenOf(p, "sig0001")).toBe("0");
+    expect(hiddenOf(p, "sig0002")).toBe("1");
+    p.post({ kind: "live-sample", samples: [sample("sig0001", "0x00000ea9", 10)] });
+    expect(p.valueOf("sig0001")).toBe("3753");
+    expect(hiddenOf(p, "sig0001")).toBe("0");
+    expect(hiddenOf(p, "sig0002")).toBe("1");
+  });
+});

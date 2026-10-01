@@ -183,16 +183,18 @@ const VAR_SCRIPT = `var __SEED = __VAR_SEED__;`
   + ` rebuild();`
   + `}`
   + `let paintQueued = false;`
+  + `const dirty = Object.create(null);`
   + `function onSamples(arr) {`
   + ` for (let i = 0; i < arr.length; i += 1) {`
   + `  const s = arr[i];`
   + `  if (!s || typeof s.name !== 'string' || s.name === '') continue;`
   + `  V.last.set(s.name, String(s.value === undefined || s.value === null ? '' : s.value));`
+  + `  dirty[s.name] = true;`
   + ` }`
   + ` if (paintQueued) return;`
   + ` paintQueued = true;`
-  + ` if (typeof setTimeout !== 'function') { paintQueued = false; paintAll(); return; }`
-  + ` setTimeout(() => { paintQueued = false; paintAll(); }, 100);`
+  + ` if (typeof setTimeout !== 'function') { paintQueued = false; paintDirty(); return; }`
+  + ` setTimeout(() => { paintQueued = false; paintDirty(); }, 100);`
   + `}`
   // The picker is a plain input: completion is the host QuickPick
   // (var-pick), because the in-page datalist rendered at odd offsets.
@@ -336,7 +338,20 @@ const VAR_SCRIPT = `var __SEED = __VAR_SEED__;`
   + ` mark.title = msg;`
   + ` ocell.appendChild(mark);`
   + `}`
-  + `function paintAll() {`
+  + `function paintRow(tr) {`
+  + ` const name = tr.getAttribute('data-name') || '';`
+  + ` const cells = tr.children;`
+  + ` if (tr.getAttribute('data-group') === '1') {`
+  + `  cells[1].textContent = tr.getAttribute('data-count') + '件';`
+  + `  cells[1].title = name + ' 配下の変数 (行名クリックで絞り込み)';`
+  + `  return;`
+  + ` }`
+  + ` const raw = V.last.has(name) ? V.last.get(name) : '';`
+  + ` const d = decode(name, raw);`
+  + ` cells[1].textContent = raw === '' ? '-' : d.label;`
+  + ` cells[1].title = name + ' [' + d.note + '] ' + String(raw);`
+  + `}`
+  + `function applyFilter() {`
   + ` if (!tbody) return;`
   + ` const filt = V.query.trim().toLowerCase();`
   + ` const kids = tbody.children;`
@@ -344,16 +359,23 @@ const VAR_SCRIPT = `var __SEED = __VAR_SEED__;`
   + `  const tr = kids[i];`
   + `  const name = tr.getAttribute('data-name') || '';`
   + `  tr.setAttribute('data-hidden', (filt !== '' && name.toLowerCase().indexOf(filt) < 0) ? '1' : '0');`
-  + `  const cells = tr.children;`
-  + `  if (tr.getAttribute('data-group') === '1') {`
-  + `   cells[1].textContent = tr.getAttribute('data-count') + '件';`
-  + `   cells[1].title = name + ' 配下の変数 (行名クリックで絞り込み)';`
-  + `   continue;`
-  + `  }`
-  + `  const raw = V.last.has(name) ? V.last.get(name) : '';`
-  + `  const d = decode(name, raw);`
-  + `  cells[1].textContent = raw === '' ? '-' : d.label;`
-  + `  cells[1].title = name + ' [' + d.note + '] ' + String(raw);`
+  + ` }`
+  + `}`
+  + `function paintAll() {`
+  + ` if (!tbody) return;`
+  + ` applyFilter();`
+  + ` const kids = tbody.children;`
+  + ` for (let i = 0; i < kids.length; i += 1) paintRow(kids[i]);`
+  + ` if (statusBox) statusBox.textContent = '監視 ' + V.order.length + ' 件';`
+  + `}`
+  + `function paintDirty() {`
+  + ` if (!tbody) return;`
+  + ` const names = Object.keys(dirty);`
+  + ` for (let i = 0; i < names.length; i += 1) {`
+  + `  const name = names[i];`
+  + `  delete dirty[name];`
+  + `  const tr = rowFor(name);`
+  + `  if (tr) paintRow(tr);`
   + ` }`
   + ` if (statusBox) statusBox.textContent = '監視 ' + V.order.length + ' 件';`
   + `}`
@@ -423,7 +445,7 @@ const VAR_SCRIPT = `var __SEED = __VAR_SEED__;`
   + `const removeBtn = q('[data-testid="var-remove"]');`
   + `if (removeBtn) removeBtn.addEventListener('click', () => removeName(picker ? picker.value : ''));`
   + `if (picker) picker.addEventListener('keydown', (e) => { if (e && e.key === 'Enter') pickVars(); });`
-  + `if (search) search.addEventListener('input', () => { V.query = search.value || ''; paintAll(); });`
+  + `if (search) search.addEventListener('input', () => { const q2 = search.value || ''; if (q2 === V.query) return; V.query = q2; paintAll(); });`
   + `if (Array.isArray(__SEED)) for (let i = 0; i < __SEED.length; i += 1) { const n = String(__SEED[i]); if (n !== '' && !V.watched[n]) { V.watched[n] = true; V.order.push(n); } }`
   + `rebuild();`;
 
