@@ -34,6 +34,28 @@ export const GRAPH_SERIES_COLORS: readonly string[] = [
   "#e5e510", "#ce9178", "#b5cea8", "#f44747", "#8bd5ca", "#ffea7f",
 ];
 
+/**
+ * Time windows the selector offers, in ms. Single source of truth: the
+ * `<option>` list AND the webview's per-series retention cap are both derived
+ * from it, so adding a window can never leave the buffer too short to fill it.
+ */
+const GRAPH_WINDOW_OPTIONS: readonly number[] = [1000, 5000, 10000, 30000, 60000];
+const DEFAULT_WINDOW_MS = 10000;
+/** Fastest rate the sidecar can run at: stm32ext.pollHz has a maximum of 200. */
+const POLL_HZ_MAX = 200;
+/** Points dropped per prune tick, and the headroom the cap keeps above the window. */
+const PRUNE_BATCH = 256;
+/**
+ * Points one series retains. INVARIANT: at least
+ * (widest offered window / 1000) x poll rate, so no selectable window can be
+ * silently shorter than the user asked for, plus one prune batch so the batched
+ * trim can never dip below it either. 1500 satisfied that only at the old 50Hz
+ * default (30s): at 100Hz it is 15s, which is why 30s and 60s could not be
+ * honoured. This is a backstop, not the working size: prune() also cuts the
+ * stale prefix on every sample, so the buffer settles at window x rate.
+ */
+const MAX_POINTS = Math.max(...GRAPH_WINDOW_OPTIONS) / 1000 * POLL_HZ_MAX + PRUNE_BATCH;
+
 const GRAPH_CSS = `<style>`
   + `html,body{height:100%}`
   + `body{--axis-text:var(--vscode-foreground,#ccc);font-family:var(--vscode-font-family,sans-serif);font-size:var(--vscode-font-size,13px);color:var(--vscode-foreground,#ccc);margin:0;padding:16px 20px 10px;line-height:1.4;display:flex;flex-direction:column;box-sizing:border-box;overflow:hidden}`
@@ -87,10 +109,12 @@ const GRAPH_SCRIPT = `var __SEED = __GRAPH_SEED__;`
 + `const clamp = (v, lo, hi) => (v < lo ? lo : (v > hi ? hi : v));`
 
   + `const PALETTE = ['#4c9aff', '#f78166', '#c586c0', '#6ac47c', '#d7ba7d', '#9cdcfe', '#e5e510', '#ce9178', '#b5cea8', '#f44747', '#8bd5ca', '#ffea7f'];`
-  // Retention: 1500 points per series bounds memory and the per-frame scan.
-  // At 200Hz that is 7.5s of trace; the x axis reports the real span it has.
-  + `const MAX_POINTS = 1500;`
-  + `const PRUNE_BATCH = 256;`
+  // Retention, interpolated by the host from the offered window list: the cap is
+  // widest window x fastest poll rate + one prune batch, so it can never be
+  // shorter than the window the user selected. prune() below also drops the
+  // stale prefix on every sample, so a narrower window costs less than the cap.
+  + `const MAX_POINTS = __MAX_POINTS__;`
+  + `const PRUNE_BATCH = __PRUNE_BATCH__;`
   // Enum lanes under the numeric plot: four is as many as stay legible in the
   // space the footer leaves below it.
   + `const MAX_LANES = 4;`
@@ -121,7 +145,7 @@ const GRAPH_SCRIPT = `var __SEED = __GRAPH_SEED__;`
   + `}`
   // DWARF carries no unit, so the unit is derived from the symbol suffix.
   + `const UNITS = [['_khz', 'kHz'], ['_hz', 'Hz'], ['_ms', 'ms'], ['_us', 'us'], ['_ns', 'ns'], ['_pct', '%'], ['_percent', '%'], ['_degc', 'degC'], ['_celsius', 'degC'], ['_temp', 'degC'], ['_volt', 'V'], ['_voltage', 'V'], ['_current', 'A'], ['_amps', 'A'], ['_rpm', 'rpm'], ['_mm', 'mm']];`
-  + `const G = { series: new Map(), order: [], types: new Map(), windowMs: 10000, queued: 0, readoutQueued: 0, dpr: 0, unknown: new Set() };`
+  + `const G = { series: new Map(), order: [], types: new Map(), windowMs: __DEFAULT_WINDOW_MS__, queued: 0, readoutQueued: 0, dpr: 0, unknown: new Set() };`
   + `const canvas = q('[data-testid="graph-canvas"]');`
   + `const wrap = q('[data-testid="graph-wrap"]');`
   + `const legend = q('[data-testid="graph-selected"]');`
@@ -635,7 +659,11 @@ export function graphPanelHtml(selected: readonly string[] = []): string {
     .replace(/&/g, "\\u0026")
     .replace(/</g, "\\u003c")
     .replace(/>/g, "\\u003e");
-  const script = GRAPH_SCRIPT.replace("__GRAPH_SEED__", seed);
+  const script = GRAPH_SCRIPT
+    .replace("__GRAPH_SEED__", seed)
+    .replace("__MAX_POINTS__", String(MAX_POINTS))
+    .replace("__PRUNE_BATCH__", String(PRUNE_BATCH))
+    .replace("__DEFAULT_WINDOW_MS__", String(DEFAULT_WINDOW_MS));
   return `<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8">`
     + `<meta name="viewport" content="width=device-width, initial-scale=1.0">`
     + `<title>${GRAPH_PANEL_TITLE}</title>${GRAPH_CSS}</head>`
@@ -647,9 +675,9 @@ export function graphPanelHtml(selected: readonly string[] = []): string {
     + `<button data-testid="graph-remove" type="button" title="入力した名前を系列から削除">削除</button>`
   + `<button data-testid="graph-clear" type="button" title="登録中の系列をすべて削除">全削除</button></div>`
     + `<div class="grp"><span class="lbl">表示範囲</span><select data-testid="graph-window" aria-label="時間幅">`
-    + `<option value="1000">1s</option><option value="5000">5s</option>`
-    + `<option value="10000" selected>10s</option><option value="30000">30s</option>`
-    + `<option value="60000">60s</option></select>`
+    + GRAPH_WINDOW_OPTIONS.map((ms) =>
+      `<option value="${ms}"${ms === DEFAULT_WINDOW_MS ? " selected" : ""}>${ms / 1000}s</option>`).join("")
+    + `</select>`
     + `<button data-testid="graph-download-csv" type="button" title="表示中の系列をCSVで保存">CSV保存</button></div>`
     + `<span data-testid="graph-y-unit" class="note"></span></div>`
     + `<p data-testid="graph-error" class="err msg" role="alert"></p>`

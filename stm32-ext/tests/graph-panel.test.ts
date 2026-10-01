@@ -439,6 +439,14 @@ const types = (index: Record<string, unknown>): unknown => ({
 const indexOf = (...names: string[]): Record<string, unknown> =>
   Object.fromEntries(names.map((n) => [n, LEAF()]));
 
+/** Per-series point cap the shipped script prunes to (MAX_POINTS). */
+const pointCap = (): number =>
+  Number(/const MAX_POINTS = (\d+);/.exec(scriptOf(graphPanelHtml([])))?.[1]);
+
+/** The time windows the selector offers, in markup order, in ms. */
+const offeredWindows = (): number[] =>
+  [...graphPanelHtml([]).matchAll(/<option value="(\d+)"/g)].map((m) => Number(m[1]));
+
 /** One CSS rule body out of the panel's single <style> block. */
 const cssRule = (html: string, selector: string): string => {
   const css = /<style>([\s\S]*?)<\/style>/.exec(html)?.[1] ?? "";
@@ -624,14 +632,18 @@ describe("graph panel frame budget", () => {
     expect(p.canvas.height).toBe(440 * 2);
     // 8 series strokes (the y grid strokes too, so filter by series colour)
     expect(p.traces().length).toBe(8);
-    // 1500 points per series is the retention cap: the last frame plots at most
-    // that many per series, never the 6250 the 25s run delivered.
+    // Stroke cost is bounded by decimation (2 vertices per plot pixel), not by
+    // the retention cap: the 25s run delivered 5000 points per series and the
+    // last frame must still plot about plotW*2 of them.
+    const plotW = 900 - 66 - 12;
     for (const t of p.traces()) {
-      expect(t.n).toBeLessThanOrEqual(1500);
-      expect(t.n).toBeGreaterThan(1000);
+      expect(t.n).toBeLessThanOrEqual(plotW * 2 + 1);
+      expect(t.n).toBeGreaterThan(plotW);
     }
-    // 8 series * 200Hz * 25s, capped, so the buffer must not have grown away.
+    // 8 series * 200Hz * 25s, pruned to the 10s window, so the buffer must not
+    // have grown away; the status line reports the cap it is pruned to.
     expect(p.byId("graph-status").textContent).toContain("系列 8 / 表示 8");
+    expect(p.byId("graph-status").textContent).toContain(`保持上限 ${pointCap()}点`);
   });
 
   it("redraws on resize", () => {
@@ -710,6 +722,73 @@ describe("graph panel 100Hz readout cadence", () => {
     }
     // One second of 100Hz updates: 100 readouts x 4 cells x 4 series.
     expect(p.writes() - base).toBe(100 * 4 * names.length);
+  });
+});
+
+describe("graph panel time window retention", () => {
+  it("offers 1/5/10/30/60s and retains every one of them at 100Hz", () => {
+    // 1500 points was sized when the sidecar polled at 50Hz (1500 = 30s). At
+    // 100Hz the same cap is 15s, so the 30s and 60s options the README documents
+    // silently plotted less than the user asked for.
+    expect(offeredWindows()).toEqual([1000, 5000, 10000, 30000, 60000]);
+    const cap = pointCap();
+    for (const ms of offeredWindows()) {
+      expect(cap, `${ms / 1000}s needs ${(ms / 1000) * 100} points at 100Hz`)
+        .toBeGreaterThanOrEqual((ms / 1000) * 100);
+    }
+  });
+
+  it("plots the whole 60s window at 100Hz instead of the 15s the old cap kept", () => {
+    const p = boot(["sys.loop_hz"]);
+    p.post(types(indexOf("sys.loop_hz")));
+    p.el("graph-window").value = "60000";
+    p.el("graph-window").fire("change");
+    // 65s at 100Hz: 500 samples more than the 60s window can show.
+    for (let i = 0; i < 6500; i += 1) {
+      p.post({ kind: "live-sample", samples: [sample("sys.loop_hz", i % 4096, i * 10)] });
+    }
+    p.flush();
+    // The axis reports the span the buffer actually holds, so a short buffer is
+    // a short axis: 60s selected has to read -60.0s, not -15.0s.
+    const axis = texts.map((c) => c.t).filter((t) => t.endsWith("s"));
+    expect(axis[0]).toBe("-60.0s");
+    expect(axis[axis.length - 1]).toBe("0.0s");
+    // ...and the trace reaches both plot edges, not a 15s squiggle inside a 60s frame.
+    const pts = p.traces()[0]?.pts ?? [];
+    expect(pts[0]?.x).toBeLessThanOrEqual(68);
+    expect(pts[pts.length - 1]?.x).toBeGreaterThanOrEqual(886);
+  });
+
+  it("holds memory to the selected window, not to the cap", () => {
+    // prune() cuts the stale prefix on every sample, so the buffer settles at
+    // window x rate. The 1s window must stay cheap even though the cap now has
+    // to cover 60s; a 6000-point buffer on a 1s window would be a leak.
+    const p = boot(["sys.loop_hz"]);
+    p.post(types(indexOf("sys.loop_hz")));
+    p.el("graph-window").value = "1000";
+    p.el("graph-window").fire("change");
+    for (let i = 0; i < 6500; i += 1) {
+      p.post({ kind: "live-sample", samples: [sample("sys.loop_hz", i % 4096, i * 10)] });
+    }
+    p.flush();
+    // 1s window, below the decimation threshold: one vertex per retained sample.
+    const narrow = p.traces()[0]?.n ?? 0;
+    expect(narrow).toBeGreaterThan(90);
+    expect(narrow).toBeLessThanOrEqual(105);
+
+    // Widening the window only fills from what arrives after the switch: the
+    // 1s window really did discard the earlier samples. 65s of new data has to
+    // leave the full 60s span behind, decimated to ~1500 plot vertices.
+    p.el("graph-window").value = "60000";
+    p.el("graph-window").fire("change");
+    for (let i = 6500; i < 13000; i += 1) {
+      p.post({ kind: "live-sample", samples: [sample("sys.loop_hz", i % 4096, i * 10)] });
+    }
+    p.flush();
+    const wide = p.traces()[0]?.n ?? 0;
+    expect(wide).toBeGreaterThan(1400);
+    const axis = texts.map((c) => c.t).filter((t) => t.endsWith("s"));
+    expect(axis[0]).toBe("-60.0s");
   });
 });
 
