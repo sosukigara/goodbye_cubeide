@@ -763,6 +763,25 @@ export class LivePanelProvider {
     }
     return completionCandidates(leaves);
   }
+  /**
+   * `name` as the leaves a graph series can actually plot.
+   *
+   * A QuickPick row can be a GROUP node (`drive.controller`), and the watchlist
+   * expands a group server-side, so the group name itself never receives a
+   * sample. Plotting it verbatim is a permanently empty series. An unknown name
+   * stays itself: the host resolves nm-only globals by name.
+   */
+  leavesUnder(name: string): string[] {
+    const n = name.trim();
+    if (n === "") {
+      return [];
+    }
+    if (this.leafMeta.has(n)) {
+      return [n];
+    }
+    const leaves = [...this.leafMeta.keys()].filter((leaf) => isUnder(leaf, n));
+    return leaves.length > 0 ? leaves : [n];
+  }
   /** Session lock path (shared across VSCode windows on this machine). */
   private lockPath(): string {
     return join(tmpdir(), "stm32ext-live.lock");
@@ -1799,6 +1818,10 @@ export class GraphPanelProvider {
     if (msg === null) {
       return;
     }
+    if (msg.kind === "var-pick") {
+      this.onPickVariables?.(msg.query ?? "");
+      return;
+    }
     if (msg.kind === "graph-add") {
       this.addSeries(msg.name);
       return;
@@ -1843,6 +1866,15 @@ export class GraphPanelProvider {
   private onWatchChange?: (name: string, add: boolean) => void;
   setWatchHandler(handler: (name: string, add: boolean) => void): void {
     this.onWatchChange = handler;
+  }
+  /**
+   * Series selection is the host's QuickPick, same as the variable tab: the
+   * panel posts `var-pick` with its typed text instead of completing in-page,
+   * so the picked name arrives here and comes back as a `graph-series` echo.
+   */
+  private onPickVariables?: (query: string) => void;
+  setPickHandler(handler: (query: string) => void): void {
+    this.onPickVariables = handler;
   }
   addSeries(name: string): void {
     const n = name.trim();
@@ -3015,7 +3047,12 @@ export function activate(context: vscode.ExtensionContext): void {
   // The sidebar keeps Project/Build/Flash/Log; Graph and Variables each have
   // their own editor-area panel.
   let variableWebviewPanel: vscode.WebviewPanel | undefined;
-  const pickVariablesFlow = async (query: string): Promise<void> => {
+  /**
+   * One QuickPick, two consumers: the variable tab adds what it picks to the
+   * watchlist, the graph panel adds it as plotted series (which registers the
+   * watch too, through the single choke point in addSeries).
+   */
+  const pickVariables = async (query: string, add: (name: string) => void): Promise<void> => {
     const candidates = livePanel.variableCandidates();
     if (candidates.length === 0) {
       void vscode.window.showWarningMessage(
@@ -3050,9 +3087,18 @@ export function activate(context: vscode.ExtensionContext): void {
       return;
     }
     for (const name of chosen) {
-      watchBatcher.push(name, true);
+      add(name);
     }
   };
+  const pickVariablesFlow = (query: string): Promise<void> =>
+    pickVariables(query, (name) => { watchBatcher.push(name, true); });
+  const pickGraphVariablesFlow = (query: string): Promise<void> =>
+    pickVariables(query, (name) => {
+      for (const leaf of livePanel.leavesUnder(name)) {
+        graphPanel.addSeries(leaf);
+      }
+    });
+  graphPanel.setPickHandler((query) => { void pickGraphVariablesFlow(query); });
   const openVariablePanel = (): void => {
     if (variableWebviewPanel !== undefined) {
       variableWebviewPanel.reveal(vscode.ViewColumn.Beside, true);

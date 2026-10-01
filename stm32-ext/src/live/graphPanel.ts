@@ -1,6 +1,6 @@
 // Graph panel (D1): a real webview panel in the editor area, not a thumbnail
 // inside the 300px sidebar. The sidebar keeps the control/status surface; this
-// file owns the whole graph surface — axes, legend, readout, controls, perf.
+// file owns the whole graph surface — axes, legend, readout, controls.
 //
 // Host -> webview messages consumed (design 3.3):
 //   live-sample   { samples: LiveSample[] }                    appended, no redraw
@@ -9,6 +9,8 @@
 // webview -> host messages produced (see parseGraphPanelMessage):
 //   graph-add / graph-remove   { name }   one message per leaf
 //   graph-download-csv         {}         no payload: the host owns the archive
+//   var-pick                   { query }  the series input asks the host for the
+//                                         QuickPick, as the variable tab does
 //
 // Value decoding follows 3.4: hex -> BigInt, float little-endian through a
 // DataView, enum through the enumerator table, signed scalars via asIntN.
@@ -19,7 +21,6 @@
 // inlined into a <script> block, so `${` and backticks would break the host
 // string builder and a stray `</script>` would truncate the page.
 
-import { CSV_HEADER } from "./poller.js";
 import { NAME_PATH_JS } from "./namePath.js";
 import { EXT_VERSION } from "../version.js";
 
@@ -35,12 +36,12 @@ export const GRAPH_SERIES_COLORS: readonly string[] = [
 
 const GRAPH_CSS = `<style>`
   + `html,body{height:100%}`
-  + `body{font-family:var(--vscode-font-family,sans-serif);font-size:var(--vscode-font-size,13px);color:var(--vscode-foreground,#ccc);margin:0;padding:16px 20px 10px;line-height:1.4;display:flex;flex-direction:column;box-sizing:border-box;overflow:hidden}`
+  + `body{--axis-text:var(--vscode-foreground,#ccc);font-family:var(--vscode-font-family,sans-serif);font-size:var(--vscode-font-size,13px);color:var(--vscode-foreground,#ccc);margin:0;padding:16px 20px 10px;line-height:1.4;display:flex;flex-direction:column;box-sizing:border-box;overflow:hidden}`
   + `h1{font-size:1.1em;font-weight:700;margin:0 0 2px;padding:0 0 0 10px;border-left:3px solid var(--vscode-textLink-foreground,#3794ff);letter-spacing:.03em}`
   + `h1 .ver{font-weight:400;font-size:.8em;opacity:.5}`
   + `.bar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:12px 0 10px;padding:10px 12px;background:rgba(127,127,127,.07);border:1px solid rgba(127,127,127,.2);border-radius:10px}`
   + `.grp{display:flex;gap:6px;align-items:center;flex-wrap:wrap}`
-  + `.lbl{font-size:.82em;font-weight:700;letter-spacing:.08em;opacity:.65;white-space:nowrap}`
+  + `.lbl{font-size:.82em;font-weight:700;letter-spacing:.08em;white-space:nowrap}`
   + `input,select,button{font:inherit;background:var(--vscode-input-background,#3c3c3c);color:var(--vscode-input-foreground,#ccc);border:1px solid var(--vscode-input-border,rgba(128,128,128,.35));border-radius:6px;padding:4px 8px}`
   + `button{cursor:pointer;background:var(--vscode-button-secondaryBackground,#3a3d41);color:var(--vscode-button-secondaryForeground,#ccc);border-color:transparent;transition:filter .12s ease}`
   + `button:hover{filter:brightness(1.15)}`
@@ -57,18 +58,18 @@ const GRAPH_CSS = `<style>`
   + `.sw{width:10px;height:10px;border-radius:3px;display:inline-block;flex:0 0 auto}`
   + `span.nm{font-family:var(--vscode-editor-font-family,monospace);font-size:.9em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}`
   + `table.read{width:100%;border-collapse:separate;border-spacing:0;margin-top:8px;font-size:.9em;background:rgba(127,127,127,.05);border:1px solid rgba(127,127,127,.2);border-radius:10px;overflow:hidden}`
-  + `table.read th{font-weight:700;font-size:.8em;letter-spacing:.08em;opacity:.65;text-align:right;padding:7px 10px;background:rgba(127,127,127,.08)}`
+  + `table.read th{font-weight:700;font-size:.8em;letter-spacing:.08em;text-align:right;padding:7px 10px;background:rgba(127,127,127,.08)}`
   + `table.read th:first-child{text-align:left}`
   + `table.read td{padding:5px 10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:44%}`
   + `table.read tbody tr:hover td{background:rgba(127,127,127,.09)}`
   + `td.n{width:auto}`
   + `td.v{font-family:var(--vscode-editor-font-family,monospace);font-variant-numeric:tabular-nums;text-align:right;width:104px;font-weight:600}`
-  + `td.u{width:64px;opacity:.8;text-align:right}`
+  + `td.u{width:64px;text-align:right}`
   + `.msg{min-height:1.2em;margin:2px 0;font-size:.9em}`
   + `.err{color:var(--vscode-testing-iconFailed,#f14c4c)}`
   + `.note{opacity:.75}`
   + `footer{display:flex;gap:14px;flex-wrap:wrap;align-items:baseline;font-size:.85em;opacity:.8;margin-top:4px}`
-  + `footer .perf,footer .stat{font-family:var(--vscode-editor-font-family,monospace);font-variant-numeric:tabular-nums}`
+  + `footer .stat{font-family:var(--vscode-editor-font-family,monospace);font-variant-numeric:tabular-nums}`
   + `::-webkit-scrollbar{width:10px;height:10px}`
   + `::-webkit-scrollbar-thumb{background:rgba(127,127,127,.35);border-radius:999px;border:2px solid transparent;background-clip:content-box}`
   + `::-webkit-scrollbar-track{background:transparent}`
@@ -81,42 +82,56 @@ const GRAPH_SCRIPT = `var __SEED = __GRAPH_SEED__;`
   // as a template literal, so `${`/backticks can never break the builder.
   + NAME_PATH_JS
   + `const vscode = acquireVsCodeApi();`
-  + `const q = (s) => document.querySelector(s);`
-  + `const mk = (t) => document.createElement(t);`
-  + `const nowMs = () => (typeof performance === 'object' && performance && typeof performance.now === 'function' ? performance.now() : Date.now());`
-  + `const clamp = (v, lo, hi) => (v < lo ? lo : (v > hi ? hi : v));`
++ `const q = (s) => document.querySelector(s);`
++ `const mk = (t) => document.createElement(t);`
++ `const clamp = (v, lo, hi) => (v < lo ? lo : (v > hi ? hi : v));`
+
   + `const PALETTE = ['#4c9aff', '#f78166', '#c586c0', '#6ac47c', '#d7ba7d', '#9cdcfe', '#e5e510', '#ce9178', '#b5cea8', '#f44747', '#8bd5ca', '#ffea7f'];`
   // Retention: 1500 points per series bounds memory and the per-frame scan.
   // At 200Hz that is 7.5s of trace; the x axis reports the real span it has.
   + `const MAX_POINTS = 1500;`
   + `const PRUNE_BATCH = 256;`
-  // Datallist depth sized off measured reality: the resolver reports ~355
-  // leaves for unit_omni3 before arrays (more after), so 5000 options leave
-  // headroom for 10x growth instead of silently hiding later members.
-  + `const MAX_OPTIONS = 5000;`
+  // Enum lanes under the numeric plot: four is as many as stay legible in the
+  // space the footer leaves below it.
   + `const MAX_LANES = 4;`
-  + `const PERF_RING = 512;`
-  + `const READOUT_MS = 250;`
+  // One readout per host poll period. The sidecar runs at 100Hz and the host
+  // tail tick is 10ms, so anything slower here hides samples that have already
+  // been read. Batches inside one window coalesce into a single readout.
++ `const READOUT_MS = 10;`
   + `const STALE_SLACK = 0.05;`
   + `const DEF_W = 960;`
   + `const DEF_H = 440;`
   + `const PAD = { l: 66, r: 12, t: 12, b: 26 };`
   + `const LANE_H = 20;`
   + `const GRID = 'rgba(128,128,128,0.28)';`
+  // Axis text is not a grid line. GRID at 0.28 alpha is unreadable as a digit,
+  // so the labels take the page foreground: the value the token resolves to on
+  // the active theme, read back from CSS because canvas fillStyle ignores
+  // custom properties.
+  + `let AXIS_TEXT = '#cccccc';`
+  + `function resolveAxisText() {`
+  + ` try {`
+  + `  if (typeof getComputedStyle !== 'function') return;`
+  + `  const cs = getComputedStyle(document.body);`
+  + `  const named = String(cs.getPropertyValue('--axis-text') || '').trim();`
+  + `  if (named !== '') { AXIS_TEXT = named; return; }`
+  + `  const fg = String(cs.color || '').trim();`
+  + `  if (fg !== '') AXIS_TEXT = fg;`
+  + ` } catch (e) { /* keep the last good colour */ }`
+  + `}`
   // DWARF carries no unit, so the unit is derived from the symbol suffix.
   + `const UNITS = [['_khz', 'kHz'], ['_hz', 'Hz'], ['_ms', 'ms'], ['_us', 'us'], ['_ns', 'ns'], ['_pct', '%'], ['_percent', '%'], ['_degc', 'degC'], ['_celsius', 'degC'], ['_temp', 'degC'], ['_volt', 'V'], ['_voltage', 'V'], ['_current', 'A'], ['_amps', 'A'], ['_rpm', 'rpm'], ['_mm', 'mm']];`
-  + `const G = { series: new Map(), order: [], types: new Map(), windowMs: 10000, queued: 0, perf: [], frames: 0, lastReadout: -1e9, dpr: 0, unknown: new Set() };`
+  + `const G = { series: new Map(), order: [], types: new Map(), windowMs: 10000, queued: 0, readoutQueued: 0, dpr: 0, unknown: new Set() };`
   + `const canvas = q('[data-testid="graph-canvas"]');`
   + `const wrap = q('[data-testid="graph-wrap"]');`
   + `const legend = q('[data-testid="graph-selected"]');`
   + `const readout = q('[data-testid="graph-readout"]');`
   + `const errBox = q('[data-testid="graph-error"]');`
-  + `const noteBox = q('[data-testid="graph-note"]');`
-  + `const perfBox = q('[data-testid="graph-perf"]');`
-  + `const unitBox = q('[data-testid="graph-y-unit"]');`
-  + `const statusBox = q('[data-testid="graph-status"]');`
-  + `const namesBox = q('[data-testid="graph-names"]');`
-  + `const picker = q('[data-testid="graph-var-picker"]');`
++ `const noteBox = q('[data-testid="graph-note"]');`
++ `const unitBox = q('[data-testid="graph-y-unit"]');`
++ `const statusBox = q('[data-testid="graph-status"]');`
++ `const picker = q('[data-testid="graph-var-picker"]');`
+
   + `const winSel = q('[data-testid="graph-window"]');`
   + `const ctx = canvas ? canvas.getContext('2d') : null;`
   + `const unitOf = (name) => { const n = String(name).toLowerCase(); for (let i = 0; i < UNITS.length; i += 1) { if (n.endsWith(UNITS[i][0])) return UNITS[i][1]; } return ''; };`
@@ -263,7 +278,6 @@ const GRAPH_SCRIPT = `var __SEED = __GRAPH_SEED__;`
   + `}`
   + `function draw() {`
   + ` if (!ctx) return;`
-  + ` const t0 = nowMs();`
   + ` const size = syncCanvas();`
   + ` const W = size.w, H = size.h;`
   + ` ctx.clearRect(0, 0, W, H);`
@@ -294,10 +308,10 @@ const GRAPH_SCRIPT = `var __SEED = __GRAPH_SEED__;`
   + ` const xOf = (t) => plotLeft + ((t - x0) / spanX) * plotW;`
   // A CSS variable is not valid in ctx.font and would be dropped silently, so
   // the tick labels ask for a concrete monospace stack instead.
-  + ` ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';`
+  + ` ctx.font = '12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace';`
   + ` ctx.textBaseline = 'middle';`
   + ` ctx.lineWidth = 1;`
-  + ` ctx.fillStyle = GRID;`
+  + ` ctx.fillStyle = AXIS_TEXT;`
   + ` ctx.strokeStyle = GRID;`
   + ` const first = Math.ceil(yMin / step - 1e-9) * step;`
   + ` for (let v = first, n = 0; v <= yMax + step * 1e-9 && n < 24; v += step, n += 1) {`
@@ -366,28 +380,15 @@ const GRAPH_SCRIPT = `var __SEED = __GRAPH_SEED__;`
   + `  ctx.textAlign = 'left';`
   + ` }`
   + ` if (vis.length === 0) {`
-  + `  ctx.fillStyle = GRID;`
+  + `  ctx.fillStyle = AXIS_TEXT;`
   + `  ctx.textAlign = 'center';`
   + `  ctx.fillText('系列未選択', plotLeft + plotW / 2, plotTop + plotH / 2);`
   + `  ctx.textAlign = 'left';`
   + ` }`
-  + ` G.frames += 1;`
-  + ` G.perf.push(nowMs() - t0);`
-  + ` if (G.perf.length > PERF_RING) G.perf.splice(0, G.perf.length - PERF_RING);`
-  + ` const t = nowMs();`
-  + ` if (t - G.lastReadout > READOUT_MS || G.lastReadout < 0) { G.lastReadout = t; paintReadout(); }`
-  + ` paintPerf();`
   + ` paintStatus();`
   + `}`
-  + `function paintPerf() {`
-  + ` if (!perfBox) return;`
-  + ` const p = G.perf;`
-  + ` const n = p.length;`
-  + ` if (n === 0) return;`
-  + ` const s = p.slice().sort((a, b) => a - b);`
-  + ` const at = (f) => s[clamp(Math.round(f * (n - 1)), 0, n - 1)];`
-  + ` perfBox.textContent = 'p50=' + at(0.5).toFixed(2) + 'ms p95=' + at(0.95).toFixed(2) + 'ms max=' + s[n - 1].toFixed(2) + 'ms frames=' + G.frames;`
-  + `}`
+  // The enum lane separator above stays GRID: it is a 1px plot line like the
+  // grid, and its label is drawn in the series colour just above it.
   + `function paintStatus() {`
   + ` if (!statusBox) return;`
   + ` const miss = G.unknown.size;`
@@ -396,8 +397,22 @@ const GRAPH_SCRIPT = `var __SEED = __GRAPH_SEED__;`
   + `}`
   + `function fail(msg) { if (errBox) { errBox.textContent = msg; errBox.className = 'err'; } }`
   + `function note(msg) { if (noteBox) { noteBox.textContent = msg; noteBox.className = 'note'; } }`
-  + `function clearErr() { if (errBox) { errBox.textContent = ''; errBox.className = 'err'; } }`
-  + `function paintReadout() {`
++ `function clearErr() { if (errBox) { errBox.textContent = ''; errBox.className = 'err'; } }`
+  // One timer per poll period, coalescing every batch that lands inside it.
+  // A rAF-driven repaint would cap the table at the display refresh, so the
+  // readout is on its own clock: 100Hz values on a 60Hz screen.
+  + `function scheduleReadout() {`
+  + ` if (G.readoutQueued) return;`
+  + ` G.readoutQueued = 1;`
+  + ` if (typeof setTimeout !== 'function') { runReadout(); return; }`
+  + ` setTimeout(runReadout, READOUT_MS);`
+  + `}`
+  + `function runReadout() {`
+  + ` G.readoutQueued = 0;`
+  + ` paintReadout();`
+  + `}`
++ `function paintReadout() {`
+
   + ` let shared = '', mixed = false;`
   + ` for (let i = 0; i < G.order.length; i += 1) {`
   + `  const s = G.series.get(G.order[i]);`
@@ -467,31 +482,6 @@ const GRAPH_SCRIPT = `var __SEED = __GRAPH_SEED__;`
   + ` s.kind = kindOf(s.meta);`
   + ` if (s.li) s.li.setAttribute('data-kind', s.kind);`
   + `}`
-  // Completion offers every leaf plus the struct nodes above it: a name like
-  // `drive.controller` is valid to add (it expands to its leaves in add()),
-  // so hiding it made the picker look like it could not do what it can.
-  // The membership set is a Set, not a plain object: a C symbol called
-  // `constructor` or `toString` would hit Object.prototype and be dropped
-  // from the candidates without a trace.
-  // Groups sort first (npCandidates): when the list is truncated, the names
-  // that survive are the ones carrying a whole subtree. Trailing segments
-  // ride along as extra options because <datalist> matches from the start of
-  // the value — a user typing `drive_` only ever matches `drive_...`
-  // segments, never the full `measure.drive_...` path. add() maps a bare
-  // segment back to its full paths, so both shapes are addable.
-  + `function fillNames() {`
-  + ` if (!namesBox) return;`
-  + ` namesBox.textContent = '';`
-  + ` const keys = Array.from(G.types.keys());`
-  + ` const cands = npCandidates(keys);`
-  + ` const seen = Object.create(null);`
-  + ` const out = [];`
-  + ` const push = (v) => { if (v !== '' && !seen[v]) { seen[v] = true; out.push(v); } };`
-  + ` for (let i = 0; i < cands.length; i += 1) push(cands[i]);`
-  + ` for (let i = 0; i < cands.length; i += 1) push(npLastSegment(cands[i]));`
-  + ` const n = Math.min(out.length, MAX_OPTIONS);`
-  + ` for (let i = 0; i < n; i += 1) { const o = mk('option'); o.setAttribute('value', out[i]); namesBox.appendChild(o); }`
-  + `}`
   // A trailing segment typed in the picker (`drive_target_radps[0]`) back to
   // the full paths it names. Exact full paths never reach here: the caller
   // checks those first, so this is only the segment-completion half.
@@ -519,7 +509,6 @@ const GRAPH_SCRIPT = `var __SEED = __GRAPH_SEED__;`
   + `  G.types = next;`
   + ` }`
   + ` for (let i = 0; i < G.order.length; i += 1) refreshKind(G.order[i]);`
-  + ` fillNames();`
   + ` rebuild();`
   + ` schedule();`
   + `}`
@@ -546,27 +535,12 @@ const GRAPH_SCRIPT = `var __SEED = __GRAPH_SEED__;`
   + ` rebuild();`
   + ` schedule();`
   + `}`
-  + `function add(raw) {`
-  + ` const name = String(raw === undefined || raw === null ? '' : raw).trim();`
-  + ` if (name === '') { fail('系列名が空です'); return; }`
-  + ` if (G.series.has(name)) { note(name + ' は追加済み'); return; }`
-  + ` if (G.types.size === 0) { seriesFor(name); rebuild(); schedule(); vscode.postMessage({ kind: 'graph-add', name: name }); clearErr(); return; }`
-  + ` if (G.types.has(name)) { seriesFor(name); rebuild(); schedule(); vscode.postMessage({ kind: 'graph-add', name: name }); clearErr(); return; }`
-  // npIsUnder, not a dotted-only prefix: an array group (`measure...radps`)
-  // must match its `[0..2]` element leaves, or the group adds nothing.
-  // No truncation: the batching layer (watchBatch.ts) coalesces one user
-  // action into a single sidecar restart no matter how many names it
-  // carries, which is why the old MAX_BULK=32 cap stopped being load-bearing
-  // — keeping it meant a 100-member struct silently added 32.
-  + ` let kids = npDescendantsOf(name, Array.from(G.types.keys()));`
-  + ` if (kids.length === 0) kids = expandSegment(name);`
-  + ` if (kids.length === 0) { fail('未知の系列: ' + name); return; }`
-  + ` kids.sort(npComparePath);`
-  + ` for (let i = 0; i < kids.length; i += 1) seriesFor(kids[i]);`
-  + ` rebuild();`
-  + ` schedule();`
-  + ` for (let i = 0; i < kids.length; i += 1) vscode.postMessage({ kind: 'graph-add', name: kids[i] });`
-  + ` clearErr();`
+  // The series picker is the host's QuickPick (var-pick), exactly like the
+  // variable-monitor tab: the in-page datalist rendered at odd offsets and its
+  // option list could not express what a group name expands to.
+  + `function pickVars() {`
+  + ` const query = picker ? String(picker.value === undefined || picker.value === null ? '' : picker.value) : '';`
+  + ` vscode.postMessage({ kind: 'var-pick', query: query.trim() });`
   + `}`
   + `function remove(raw) {`
   + ` const name = String(raw === undefined || raw === null ? '' : raw).trim();`
@@ -607,7 +581,8 @@ const GRAPH_SCRIPT = `var __SEED = __GRAPH_SEED__;`
   + `  const cut = lowerBound(s.pts, s.pts.length ? s.pts[s.pts.length - 1].t - ms : 0);`
   + `  if (cut > 0) s.pts.splice(0, cut);`
   + ` }`
-  + ` G.lastReadout = -1e9;`
+  // Pruning to the window changed every min/max, so the table owes a repaint.
+  + ` scheduleReadout();`
   + ` schedule();`
   + `}`
   + `function schedule() {`
@@ -620,22 +595,35 @@ const GRAPH_SCRIPT = `var __SEED = __GRAPH_SEED__;`
   + `window.addEventListener('message', (e) => {`
   + ` const m = (e && e.data) || {};`
   + ` const k = m.kind;`
+  // The host forwards the whole batch unfiltered, so 未登録 is recomputed per
+  // batch: it counts the watched names arriving now that are not plotted
+  // series. A cumulative set froze at the session high-water mark.
   + ` if (k === 'live-sample' && Array.isArray(m.samples)) {`
+  + `  G.unknown.clear();`
   + `  for (let i = 0; i < m.samples.length; i += 1) ingest(m.samples[i]);`
+  + `  scheduleReadout();`
   + `  schedule();`
   + ` }`
   + ` else if (k === 'live-types') onTypes(m);`
   + ` else if (k === 'graph-series') onSeries(m);`
   + `});`
   + `window.addEventListener('resize', schedule);`
+  // A theme switch restyles the page without a message; the canvas cannot read
+  // a custom property, so the resolved colour has to be pulled again.
+  + `if (typeof matchMedia === 'function') {`
+  + ` try {`
+  + `  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { resolveAxisText(); schedule(); });`
+  + ` } catch (e) { /* older webview: the boot-time value stands */ }`
+  + `}`
   + `if (typeof ResizeObserver === 'function' && wrap) { new ResizeObserver(schedule).observe(wrap); }`
-  + `q('[data-testid="graph-add"]').addEventListener('click', () => add(picker ? picker.value : ''));`
+  + `q('[data-testid="graph-add"]').addEventListener('click', () => pickVars());`
   + `q('[data-testid="graph-remove"]').addEventListener('click', () => remove(picker ? picker.value : ''));`
   + `q('[data-testid="graph-clear"]').addEventListener('click', removeAll);`
   + `q('[data-testid="graph-download-csv"]').addEventListener('click', downloadCsv);`
-  + `if (picker) picker.addEventListener('keydown', (e) => { if (e && e.key === 'Enter') add(picker.value); });`
+  + `if (picker) picker.addEventListener('keydown', (e) => { if (e && e.key === 'Enter') pickVars(); });`
   + `if (winSel) winSel.addEventListener('change', () => setWindow(parseInt(winSel.value, 10)));`
   + `if (Array.isArray(__SEED)) for (let i = 0; i < __SEED.length; i += 1) seriesFor(String(__SEED[i]));`
+  + `resolveAxisText();`
   + `rebuild();`
   + `schedule();`;
 
@@ -654,9 +642,8 @@ export function graphPanelHtml(selected: readonly string[] = []): string {
     + `<body><h1>${GRAPH_PANEL_TITLE} <span class="ver">v${EXT_VERSION}</span></h1>`
     + `<div class="bar" role="toolbar" aria-label="グラフ操作">`
     + `<div class="grp"><span class="lbl">系列</span>`
-    + `<input data-testid="graph-var-picker" type="text" list="graph-names" placeholder="sys.loop_hz" aria-label="系列名">`
-    + `<datalist id="graph-names" data-testid="graph-names"></datalist>`
-    + `<button data-testid="graph-add" type="button" class="primary" title="入力した名前を系列に追加">追加</button>`
+    + `<input data-testid="graph-var-picker" type="text" placeholder="sys.loop_hz" aria-label="系列名（変数ピッカーの検索文字列）">`
+    + `<button data-testid="graph-add" type="button" class="primary" title="変数ピッカーから系列を選ぶ">追加</button>`
     + `<button data-testid="graph-remove" type="button" title="入力した名前を系列から削除">削除</button>`
   + `<button data-testid="graph-clear" type="button" title="登録中の系列をすべて削除">全削除</button></div>`
     + `<div class="grp"><span class="lbl">表示範囲</span><select data-testid="graph-window" aria-label="時間幅">`
@@ -673,19 +660,23 @@ export function graphPanelHtml(selected: readonly string[] = []): string {
     + `<table data-testid="graph-readout" class="read"><thead><tr>`
     + `<th>NAME</th><th>MIN</th><th>MAX</th><th>LAST</th><th>UNIT</th>`
     + `</tr></thead></table>`
-    + `<footer><span data-testid="graph-perf" class="perf"></span>`
-    + `<span data-testid="graph-status" class="stat"></span></footer>`
-    + `<p data-testid="graph-csv-schema" class="note">${CSV_HEADER}</p>`
+    + `<footer><span data-testid="graph-status" class="stat"></span></footer>`
     + `<script>${script}</` + `script>`
     + `</body></html>`;
 }
 
-export type GraphPanelMessageKind = "graph-add" | "graph-remove" | "graph-download-csv";
+export type GraphPanelMessageKind =
+  | "graph-add"
+  | "graph-remove"
+  | "graph-download-csv"
+  | "var-pick";
 
 export interface GraphPanelMessage {
   readonly kind: GraphPanelMessageKind;
-  /** Empty for graph-download-csv, which carries no payload. */
+  /** Empty for graph-download-csv and var-pick, which carry no name. */
   readonly name: string;
+  /** Only set for var-pick: the series input's text as the QuickPick seed. */
+  readonly query?: string;
 }
 
 export function parseGraphPanelMessage(raw: unknown): GraphPanelMessage | null {
@@ -695,6 +686,9 @@ export function parseGraphPanelMessage(raw: unknown): GraphPanelMessage | null {
   const r = raw as Record<string, unknown>;
   if (r["kind"] === "graph-download-csv") {
     return { kind: "graph-download-csv", name: "" };
+  }
+  if (r["kind"] === "var-pick" && typeof r["query"] === "string") {
+    return { kind: "var-pick", name: "", query: r["query"] };
   }
   if (r["kind"] === "graph-add" && typeof r["name"] === "string" && r["name"] !== "") {
     return { kind: "graph-add", name: r["name"] };

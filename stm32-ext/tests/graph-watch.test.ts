@@ -115,6 +115,52 @@ describe("graph panel: type metadata reaches a panel opened before the build", (
 });
 
 describe("graph panel: adding a series registers it with the live session", () => {
+  it("routes the panel's var-pick to the host picker, membership and all", () => {
+    // The panel's 追加 / Enter post var-pick with the typed query instead of
+    // completing in-page, so the graph behaves like the variable-monitor tab.
+    const graph = new GraphPanelProvider();
+    const queries: string[] = [];
+    const changes: [string, boolean][] = [];
+    graph.setPickHandler((query) => { queries.push(query); });
+    graph.setWatchHandler((name, add) => { changes.push([name, add]); });
+    let deliver: ((raw: unknown) => void) | undefined;
+    graph.mount({
+      options: {},
+      html: "",
+      postMessage: (): void => { /* noop */ },
+      onDidReceiveMessage: (fn: (raw: unknown) => void) => {
+        deliver = fn;
+        return { dispose: (): void => { /* noop */ } };
+      },
+    } as never);
+
+    (deliver as unknown as (raw: unknown) => void)({ kind: "var-pick", query: "sys." });
+
+    expect(queries).toEqual(["sys."]);
+    // The panel decides nothing by itself: the picker result comes back through
+    // addSeries, which is the single place that also registers the watch.
+    expect(graph.seriesNames()).toEqual([]);
+    expect(changes).toEqual([]);
+
+    graph.addSeries("sys.loop_hz");
+    expect(graph.seriesNames()).toEqual(["sys.loop_hz"]);
+    expect(changes).toEqual([["sys.loop_hz", true]]);
+  });
+
+  it("expands a picked struct group into the leaves a series can plot", () => {
+    // A QuickPick row can be a GROUP node (`drive.controller`). The watchlist
+    // expands it server-side, so the group name itself never receives a
+    // sample: adding it verbatim would plot a permanently empty series.
+    const live = new LivePanelProvider(CHANNEL);
+    live.setResolution(RESOLUTION, "STM32F4");
+    expect(live.leavesUnder("sys.loop_hz")).toEqual(["sys.loop_hz"]);
+    expect(live.leavesUnder("sys")).toEqual(["sys.loop_hz"]);
+    expect(live.leavesUnder("drive")).toEqual(["drive.motor_timeout"]);
+    // An unknown name stays itself: the host resolves nm-only globals.
+    expect(live.leavesUnder("  periph.uart_rx ")).toEqual(["periph.uart_rx"]);
+    expect(live.leavesUnder("   ")).toEqual([]);
+  });
+
   it("the panel's own 追加 reaches the watch handler", () => {
     const graph = new GraphPanelProvider();
     const changes: [string, boolean][] = [];

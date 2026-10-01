@@ -9,7 +9,6 @@ import {
   graphPanelHtml,
   parseGraphPanelMessage,
 } from "../src/live/graphPanel.js";
-import { CSV_HEADER } from "../src/live/poller.js";
 
 interface StubEl {
   tagName: string;
@@ -38,6 +37,12 @@ interface StubEl {
   getBoundingClientRect(): { width: number; height: number };
 }
 
+/** Grid-line colour the shipped script draws lines with; axis TEXT must not be it. */
+const GRID = "rgba(128,128,128,0.28)";
+
+/** MIN/MAX/LAST (`v`) and UNIT (`u`) cell writes: the 100Hz readout surface. */
+let valueWrites = 0;
+
 function makeEl(tag: string, rect?: { width: number; height: number }): StubEl {
   const el: StubEl = {
     tagName: tag.toUpperCase(),
@@ -55,6 +60,9 @@ function makeEl(tag: string, rect?: { width: number; height: number }): StubEl {
       return this._text + this.children.map((c) => c.textContent).join("");
     },
     set textContent(v: string) {
+      if (this.className === "v" || this.className === "u") {
+        valueWrites += 1;
+      }
       this._text = String(v);
       this.children.length = 0;
     },
@@ -113,8 +121,8 @@ const recorded: Path[] = [];
 let current: { x: number; y: number }[] = [];
 let pointCount = 0;
 let recordPoints = true;
-/** Axis / enum text drawn in the current frame, in call order. */
-const texts: { t: string; x: number; y: number }[] = [];
+/** Axis / enum text drawn in the current frame, in call order, with its paint. */
+const texts: { t: string; x: number; y: number; fill: string; font: string }[] = [];
 
 const ctxStub = {
   strokeStyle: "",
@@ -133,7 +141,13 @@ const ctxStub = {
   },
   fillRect: (): void => undefined,
   fillText(t: string, x: number, y: number): void {
-    texts.push({ t: String(t), x, y });
+    texts.push({
+      t: String(t),
+      x,
+      y,
+      fill: String(ctxStub.fillStyle),
+      font: String(ctxStub.font),
+    });
   },
   rect: (): void => undefined,
   closePath: (): void => undefined,
@@ -161,7 +175,7 @@ const ctxStub = {
 interface Panel {
   post(data: unknown): void;
   flush(frames?: number): void;
-  posted: { kind: string; name?: string; names?: string[] }[];
+  posted: { kind: string; name?: string; query?: string; names?: string[] }[];
   el(testid: string): StubEl;
   paths(): Path[];
   traces(): Path[];
@@ -172,6 +186,70 @@ interface Panel {
   legendNames(): string[];
   resize(): void;
   canvas: StubEl;
+  /** MIN/MAX/LAST/UNIT cell writes since boot: the readout DOM cost. */
+  writes(): number;
+}
+
+/**
+ * Hand-driven setTimeout, copied from tests/variable-panel.test.ts so both
+ * 100Hz surfaces are asserted the same way: the panel schedules its readout one
+ * poll period out, and the tests own the clock that decides when it runs.
+ * Without a clock the vm has no setTimeout at all and the shipped
+ * `typeof setTimeout !== 'function'` fallback paints synchronously, which is
+ * what every other test in this file exercises.
+ */
+export interface FakeClock {
+  /** Delay (ms) of every callback scheduled so far, in scheduling order. */
+  readonly scheduled: number[];
+  /** Run every callback due within the next `ms`, then park the clock there. */
+  advance(ms: number): void;
+  /** Callbacks still waiting to run. */
+  pending(): number;
+}
+
+interface FakeClockImpl extends FakeClock {
+  setTimeout(fn: () => void, ms: number): number;
+}
+
+function fakeClock(): FakeClockImpl {
+  let now = 0;
+  let seq = 0;
+  const queue: { at: number; seq: number; fn: () => void }[] = [];
+  const scheduled: number[] = [];
+  return {
+    scheduled,
+    setTimeout(fn: () => void, ms: number): number {
+      const delay = Number(ms);
+      seq += 1;
+      scheduled.push(Number.isFinite(delay) ? delay : 0);
+      queue.push({ at: now + (Number.isFinite(delay) ? delay : 0), seq, fn });
+      return seq;
+    },
+    advance(ms: number): void {
+      const end = now + ms;
+      for (;;) {
+        let best = -1;
+        for (let i = 0; i < queue.length; i += 1) {
+          const t = queue[i] as { at: number; seq: number; fn: () => void };
+          if (t.at > end) continue;
+          if (best < 0) {
+            best = i;
+            continue;
+          }
+          const b = queue[best] as { at: number; seq: number; fn: () => void };
+          if (t.at < b.at || (t.at === b.at && t.seq < b.seq)) best = i;
+        }
+        if (best < 0) break;
+        const [t] = queue.splice(best, 1);
+        now = (t as { at: number; seq: number; fn: () => void }).at;
+        (t as { at: number; seq: number; fn: () => void }).fn();
+      }
+      now = end;
+    },
+    pending(): number {
+      return queue.length;
+    },
+  };
 }
 
 function scriptOf(html: string): string {
@@ -182,10 +260,15 @@ function scriptOf(html: string): string {
   return m[1] ?? "";
 }
 
-function boot(selected: readonly string[] = []): Panel {
+function boot(
+  selected: readonly string[] = [],
+  clock?: FakeClockImpl,
+  themeColor?: string,
+): Panel {
   recorded.length = 0;
   current = [];
   recordPoints = true;
+  valueWrites = 0;
   const html = graphPanelHtml(selected);
   const byId = new Map<string, StubEl>();
   const markup = html.replace(/<script>[\s\S]*?<\/script>/g, "");
@@ -196,17 +279,24 @@ function boot(selected: readonly string[] = []): Panel {
   }
   for (const id of [
     "graph-canvas", "graph-var-picker", "graph-add", "graph-remove",
-    "graph-download-csv", "graph-csv-schema", "graph-selected", "graph-readout",
-    "graph-window", "graph-error", "graph-note", "graph-perf", "graph-y-unit",
-    "graph-status", "graph-names", "graph-wrap",
+    "graph-download-csv", "graph-selected", "graph-readout",
+    "graph-window", "graph-error", "graph-note", "graph-y-unit",
+    "graph-status", "graph-wrap",
   ]) {
     if (!byId.has(id)) {
       throw new Error(`graph panel html is missing data-testid="${id}"`);
     }
   }
+  // Removed on request: the frame-timing footer, the CSV schema line and the
+  // inline datalist. A stale element must not silently keep the harness green.
+  for (const id of ["graph-perf", "graph-csv-schema", "graph-names"]) {
+    if (byId.has(id)) {
+      throw new Error(`data-testid="${id}" was removed from the graph panel`);
+    }
+  }
   byId.get("graph-window")!.value = "10000";
 
-  const posted: { kind: string; name?: string; names?: string[] }[] = [];
+  const posted: { kind: string; name?: string; query?: string; names?: string[] }[] = [];
   const frameQueue: (() => void)[] = [];
   const winHandlers: Record<string, ((ev: unknown) => void)[]> = {};
   let observed: (() => void) | null = null;
@@ -241,6 +331,18 @@ function boot(selected: readonly string[] = []): Panel {
     requestAnimationFrame: (cb: () => void): number => frameQueue.push(cb),
     cancelAnimationFrame: (): void => undefined,
     console,
+    ...(clock === undefined ? {} : { setTimeout: clock.setTimeout }),
+    // A real webview resolves --axis-text through the cascade; the vm has no
+    // getComputedStyle, so the light-theme case is supplied here.
+    ...(themeColor === undefined
+      ? {}
+      : {
+        getComputedStyle: () => ({
+          getPropertyValue: (name: string): string =>
+            (name === "--axis-text" ? themeColor : ""),
+          color: themeColor,
+        }),
+      }),
   };
   const windowStub = {
     addEventListener(t: string, f: (ev: unknown) => void): void {
@@ -298,6 +400,7 @@ function boot(selected: readonly string[] = []): Panel {
       }
     },
     canvas: byId.get("graph-canvas") as StubEl,
+    writes: (): number => valueWrites,
   };
 }
 
@@ -336,12 +439,23 @@ const types = (index: Record<string, unknown>): unknown => ({
 const indexOf = (...names: string[]): Record<string, unknown> =>
   Object.fromEntries(names.map((n) => [n, LEAF()]));
 
+/** One CSS rule body out of the panel's single <style> block. */
+const cssRule = (html: string, selector: string): string => {
+  const css = /<style>([\s\S]*?)<\/style>/.exec(html)?.[1] ?? "";
+  const esc = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // Rules are concatenated with no separator, so anchor on a rule boundary or
+  // `body` would match inside `html,body{...}`.
+  return new RegExp(`(?:^|\\})\\s*${esc}\\{([^}]*)\\}`).exec(css)?.[1] ?? "";
+};
+
 describe("graph panel surface", () => {
   it("is a self-contained document whose script parses", () => {
     const html = graphPanelHtml(["sys.loop_hz"]);
     expect(html).toContain("<!DOCTYPE html>");
-    expect(html).toContain(CSV_HEADER);
-    expect(html).toContain('data-testid="graph-csv-schema"');
+    // The CSV schema line was removed on request: the 4-column header was
+    // spelled out under the plot, which read as a fragment of output.
+    expect(html).not.toContain("timestamp,address,name,value");
+    expect(html).not.toContain('data-testid="graph-csv-schema"');
     expect(() => new Script(scriptOf(html))).not.toThrow();
   });
 
@@ -349,7 +463,7 @@ describe("graph panel surface", () => {
     const html = graphPanelHtml([]);
     for (const id of ["graph-canvas", "graph-var-picker", "graph-add", "graph-remove",
       "graph-download-csv", "graph-selected", "graph-readout", "graph-window",
-      "graph-error", "graph-perf", "graph-y-unit", "graph-status"]) {
+      "graph-error", "graph-y-unit", "graph-status"]) {
       expect(html, `missing ${id}`).toContain(`data-testid="${id}"`);
     }
     // y ticks + x window labels are drawn, so the axis has no html twin
@@ -362,11 +476,89 @@ describe("graph panel surface", () => {
       .toEqual([...GRAPH_SERIES_COLORS]);
   });
 
+  it("drops the frame-timing footer and its instrumentation", () => {
+    const html = graphPanelHtml([]);
+    // The user asked for the p50/p95/max/frames line gone, counters included.
+    expect(html).not.toContain('data-testid="graph-perf"');
+    expect(html).not.toContain("p50=");
+    const script = scriptOf(html);
+    expect(script).not.toContain("paintPerf");
+    expect(script).not.toContain("PERF_RING");
+    expect(script).not.toContain("G.frames");
+    // the footer line the user kept: 系列 / 表示 / 保持上限 / 未登録
+    expect(html).toContain('data-testid="graph-status"');
+  });
+
   it("keeps the panel free of guide prose", () => {
     const html = graphPanelHtml(["sys.loop_hz"]);
     for (const phrase of ["手順", "使いかた", "ここに表示", 'class="guide"', "(グラフ)"]) {
       expect(html).not.toContain(phrase);
     }
+  });
+});
+
+describe("graph panel text legibility", () => {
+  it("paints axis, time and placeholder text in the foreground colour, not the grid colour", () => {
+    // GRID is rgba(128,128,128,0.28): correct for a 1px grid line, unreadable
+    // as a number. The numbers were drawn in it, which is the whole complaint.
+    const p = boot();
+    p.post(types(indexOf("sys.loop_hz")));
+    p.flush();
+    const placeholder = texts.find((c) => c.t === "系列未選択");
+    expect(placeholder).toBeDefined();
+    expect(placeholder?.fill).not.toBe(GRID);
+    // #ccc on --vscode-editor-background #1e1e1e is ~10:1; the resolved theme
+    // foreground is what the rest of the page uses, so it tracks the theme.
+    expect(placeholder?.fill).toBe("#cccccc");
+
+    const p2 = boot(["sys.loop_hz"]);
+    p2.post(types(indexOf("sys.loop_hz")));
+    p2.post({ kind: "live-sample", samples: [sample("sys.loop_hz", 100, 0)] });
+    p2.flush();
+    const ticks = texts.filter((c) => /^-?[\d.]+s?$/.test(c.t));
+    expect(ticks.length).toBeGreaterThan(4);
+    for (const c of ticks) {
+      expect(c.fill, `${c.t} is drawn in the grid colour`).not.toBe(GRID);
+    }
+    // 10px monospace digits could not be read at all; the axis is 12px now.
+    for (const c of texts) {
+      expect(c.font).toMatch(/^12px /);
+    }
+  });
+
+  it("keeps GRID for grid lines and follows the theme for axis text", () => {
+    const html = graphPanelHtml([]);
+    expect(scriptOf(html)).toContain(`const GRID = '${GRID}'`);
+    // Canvas fillStyle cannot resolve a CSS var(), so the value is declared as
+    // a token in CSS and read back through getComputedStyle.
+    expect(cssRule(html, "body")).toContain("--axis-text:var(--vscode-foreground,#ccc)");
+    expect(scriptOf(html)).toContain("getComputedStyle");
+  });
+
+  it("takes the axis colour from the active theme, not from a hardcoded dark value", () => {
+    // #cccccc on #1e1e1e is 10.4:1 but unreadable on a light editor background,
+    // so the resolved token wins: VS Code light themes resolve --vscode-foreground
+    // to near-black.
+    const p = boot(["sys.loop_hz"], undefined, "rgb(36, 36, 36)");
+    p.post(types(indexOf("sys.loop_hz")));
+    p.post({ kind: "live-sample", samples: [sample("sys.loop_hz", 100, 0)] });
+    p.flush();
+    const ticks = texts.filter((c) => /^-?[\d.]+s?$/.test(c.t));
+    expect(ticks.length).toBeGreaterThan(4);
+    for (const c of ticks) {
+      expect(c.fill).toBe("rgb(36, 36, 36)");
+    }
+  });
+
+  it("drops the dim opacities that made the labels unreadable", () => {
+    const html = graphPanelHtml([]);
+    // .lbl (axis labels), the NAME/MIN/MAX/LAST/UNIT header, the UNIT column.
+    expect(cssRule(html, ".lbl")).not.toMatch(/opacity:\.\d/);
+    expect(cssRule(html, "table.read th")).not.toMatch(/opacity:\.\d/);
+    expect(cssRule(html, "td.u")).not.toMatch(/opacity:\.\d/);
+    // ...and the perf rule went with the element it styled.
+    expect(html).not.toContain("footer .perf");
+    expect(cssRule(html, "footer .stat")).toContain("font-variant-numeric:tabular-nums");
   });
 });
 
@@ -401,27 +593,32 @@ describe("graph panel frame budget", () => {
 
     const MESSAGES = 5000;
     let drawn = 0;
+    // The perf footer is gone, so the frame cost is measured here instead: the
+    // same draw() the panel ships, timed around the rAF callback.
+    const costs: number[] = [];
     for (let i = 0; i < MESSAGES; i += 1) {
       // 200Hz: one message every 5ms. A 60Hz display sees one frame per ~3.33
       // messages, so flush every third message.
       const samples = names.map((n, k) => sample(n, (i * 7 + k * 13) % 4096, i * 5));
       p.post({ kind: "live-sample", samples });
       if (i % 3 === 0) {
+        const t0 = performance.now();
         p.flush(1);
+        costs.push(performance.now() - t0);
         drawn += 1;
       }
     }
+    const tail = performance.now();
     drawn += p.runFrames();
+    expect(performance.now() - tail).toBeLessThan(16.7);
 
     // rAF batching: 5000 messages must not become 5000 draws.
     expect(drawn).toBeLessThan(MESSAGES / 2);
     expect(drawn).toBeGreaterThan(1000);
 
-    const perf = p.byId("graph-perf").textContent;
-    const p95 = Number(/p95=([0-9.]+)ms/.exec(perf)?.[1]);
-    expect(Number.isFinite(p95)).toBe(true);
+    const sorted = costs.slice().sort((a, b) => a - b);
+    const p95 = sorted[Math.min(sorted.length - 1, Math.round(0.95 * (sorted.length - 1)))] ?? 0;
     expect(p95).toBeLessThanOrEqual(16.7);
-    expect(p95).toBeGreaterThan(0);
     // devicePixelRatio is applied to the backing store, not the CSS box.
     expect(p.canvas.width).toBe(900 * 2);
     expect(p.canvas.height).toBe(440 * 2);
@@ -443,10 +640,76 @@ describe("graph panel frame budget", () => {
     p.post({ kind: "live-sample", samples: [sample("sys.loop_hz", 7, 0)] });
     p.flush();
     expect(p.traces().length).toBe(1);
+    texts.length = 0;
     p.resize();
     p.flush();
     expect(p.traces().length).toBe(1);
-    expect(p.byId("graph-perf").textContent).toContain("frames=2");
+    // A resize must produce a real frame: the axis is drawn again, which is
+    // what the removed frames=N counter used to prove.
+    expect(texts.length).toBeGreaterThan(4);
+  });
+});
+
+describe("graph panel 100Hz readout cadence", () => {
+  it("repaints the series table 10ms after a batch arrives, not 250ms", () => {
+    // The host tail tick and this readout throttle both sit at 10ms, so a value
+    // is on screen one poll period after the read. At 250ms the table showed 4
+    // of the 100 samples/s.
+    const clock = fakeClock();
+    const p = boot(["sys.loop_hz"], clock);
+    p.post(types(indexOf("sys.loop_hz")));
+    expect(p.seriesRows()[0]?.cells).toEqual(["sys.loop_hz", "-", "-", "-", "Hz"]);
+
+    p.post({ kind: "live-sample", samples: [sample("sys.loop_hz", 3751, 0)] });
+    expect(clock.scheduled).toEqual([10]);
+    expect(clock.pending()).toBe(1);
+
+    const before = p.writes();
+    clock.advance(9);
+    expect(p.writes()).toBe(before);
+    expect(p.seriesRows()[0]?.cells[3]).toBe("-");
+    clock.advance(1);
+    expect(p.seriesRows()[0]?.cells).toEqual(["sys.loop_hz", "3751", "3751", "3751", "Hz"]);
+    expect(p.writes()).toBeGreaterThan(before);
+
+    // The next poll period behaves the same way.
+    p.post({ kind: "live-sample", samples: [sample("sys.loop_hz", 3752, 10)] });
+    expect(clock.scheduled).toEqual([10, 10]);
+    clock.advance(10);
+    expect(p.seriesRows()[0]?.cells[3]).toBe("3752");
+    expect(clock.pending()).toBe(0);
+  });
+
+  it("coalesces the batches inside one 10ms window into a single readout", () => {
+    // 100Hz in, 10ms out: several batches land inside one window and must
+    // merge into one timer, not one timer each.
+    const clock = fakeClock();
+    const p = boot(["sys.loop_hz", "nav.error"], clock);
+    p.post(types(indexOf("sys.loop_hz", "nav.error")));
+    p.post({ kind: "live-sample", samples: [sample("sys.loop_hz", 3751, 0)] });
+    p.post({ kind: "live-sample", samples: [sample("nav.error", 42, 3)] });
+    p.post({ kind: "live-sample", samples: [sample("sys.loop_hz", 3752, 7)] });
+    expect(clock.scheduled).toEqual([10]);
+    expect(clock.pending()).toBe(1);
+    clock.advance(10);
+    expect(p.seriesRows().find((r) => r.name === "sys.loop_hz")?.cells[3]).toBe("3752");
+    expect(p.seriesRows().find((r) => r.name === "nav.error")?.cells[3]).toBe("42");
+  });
+
+  it("repaints four cells per series per update, 400/s at 100Hz for one series", () => {
+    // The cost that made the table "too slow": MIN/MAX/LAST/UNIT per series,
+    // once per poll period. 1 series = 400 writes/s, 8 series = 3,200.
+    const clock = fakeClock();
+    const names = ["sys.loop_hz", "sys.heap_used", "sys.stack_used", "drive.speed"];
+    const p = boot(names, clock);
+    p.post(types(indexOf(...names)));
+    const base = p.writes();
+    for (let i = 0; i < 100; i += 1) {
+      p.post({ kind: "live-sample", samples: names.map((n) => sample(n, i, i * 10)) });
+      clock.advance(10);
+    }
+    // One second of 100Hz updates: 100 readouts x 4 cells x 4 series.
+    expect(p.writes() - base).toBe(100 * 4 * names.length);
   });
 });
 
@@ -645,7 +908,10 @@ describe("graph panel type awareness", () => {
 });
 
 describe("graph panel controls", () => {
-  it("adds a dotted struct member name as its leaves and removes them again", () => {
+  it("asks the host for the VS Code variable picker instead of completing in-page", () => {
+    // The user asked for the same picker as the variable-monitor tab. The
+    // panel keeps membership in the host's hands: it posts the query and waits
+    // for a `graph-series` echo, exactly like the variable tab's var-pick.
     const p = boot();
     p.post({
       kind: "live-types",
@@ -653,64 +919,81 @@ describe("graph panel controls", () => {
       index: {
         "drive.controller.up": LEAF({ size: 1, kind: "bool" }),
         "drive.controller.down": LEAF({ size: 1, kind: "bool" }),
-        "sys.loop_hz": LEAF(),
       },
     });
     p.el("graph-var-picker").value = "drive.controller";
     p.el("graph-add").fire("click");
-    expect(p.legendNames()).toEqual(["drive.controller.down", "drive.controller.up"]);
-    expect(p.posted).toEqual([
-      { kind: "graph-add", name: "drive.controller.down" },
-      { kind: "graph-add", name: "drive.controller.up" },
-    ]);
+    expect(p.posted).toEqual([{ kind: "var-pick", query: "drive.controller" }]);
+    // Nothing is plotted until the host picks and echoes the series back.
+    expect(p.legendNames()).toEqual([]);
 
+    p.post({
+      kind: "graph-series",
+      series: [{ name: "drive.controller.down", color: "#111111", visible: true }],
+    });
+    p.flush();
+    expect(p.legendNames()).toEqual(["drive.controller.down"]);
+    // no double bookkeeping: the host owns membership, so the panel posts nothing
+    p.posted.length = 0;
+    expect(p.posted).toEqual([]);
+  });
+
+  it("uses the same picker from Enter in the series input", () => {
+    const p = boot();
+    p.post(types(indexOf("sys.loop_hz")));
+    p.el("graph-var-picker").value = "  sys.  ";
+    p.el("graph-var-picker").fire("keydown", { key: "Enter" });
+    expect(p.posted).toEqual([{ kind: "var-pick", query: "sys." }]);
+  });
+
+  it("removes a dotted struct member name as its leaves", () => {
+    const p = boot();
+    p.post({
+      kind: "graph-series",
+      series: [{ name: "drive.controller.down" }, { name: "drive.controller.up" }],
+    });
+    p.flush();
+    expect(p.legendNames()).toEqual(["drive.controller.down", "drive.controller.up"]);
     p.el("graph-var-picker").value = "drive.controller";
     p.el("graph-remove").fire("click");
     expect(p.legendNames()).toEqual([]);
-    expect(p.posted[2]).toEqual({ kind: "graph-remove", name: "drive.controller.down" });
-    expect(p.posted[3]).toEqual({ kind: "graph-remove", name: "drive.controller.up" });
+    expect(p.posted).toEqual([
+      { kind: "graph-remove", name: "drive.controller.down" },
+      { kind: "graph-remove", name: "drive.controller.up" },
+    ]);
     expect(p.el("graph-error").textContent).toBe("");
   });
 
   it("clears every registered series with one 全削除 click", () => {
     const p = boot();
     p.post({
-      kind: "live-types",
-      tree: { name: "debug" },
-      index: {
-        "drive.controller.up": LEAF({ size: 1, kind: "bool" }),
-        "drive.controller.down": LEAF({ size: 1, kind: "bool" }),
-        "sys.loop_hz": LEAF(),
-      },
+      kind: "graph-series",
+      series: [{ name: "drive.controller.up" }, { name: "drive.controller.down" },
+        { name: "sys.loop_hz" }],
     });
-    p.el("graph-var-picker").value = "drive.controller";
-    p.el("graph-add").fire("click");
-    p.el("graph-var-picker").value = "sys.loop_hz";
-    p.el("graph-add").fire("click");
+    p.flush();
     expect(p.legendNames()).toEqual([
-      "drive.controller.down",
       "drive.controller.up",
+      "drive.controller.down",
       "sys.loop_hz",
     ]);
     p.el("graph-clear").fire("click");
     expect(p.legendNames()).toEqual([]);
-    expect(p.posted.slice(-3)).toEqual([
-      { kind: "graph-remove", name: "drive.controller.down" },
+    expect(p.posted).toEqual([
       { kind: "graph-remove", name: "drive.controller.up" },
+      { kind: "graph-remove", name: "drive.controller.down" },
       { kind: "graph-remove", name: "sys.loop_hz" },
     ]);
     expect(p.el("graph-error").textContent).toBe("");
   });
 
-  it("reports an unknown name instead of ignoring it", () => {    const p = boot();
-    p.post({ kind: "live-types", tree: { name: "debug" }, index: { "sys.loop_hz": LEAF() } });
-    p.el("graph-var-picker").value = "sys.nope";
-    p.el("graph-add").fire("click");
-    expect(p.el("graph-error").textContent).toContain("未知の系列: sys.nope");
-    expect(p.posted).toEqual([]);
+  it("reports an unknown name instead of ignoring it", () => {
+    const p = boot();
+    p.post(types(indexOf("sys.loop_hz")));
     p.el("graph-var-picker").value = "sys.loop_hz";
     p.el("graph-remove").fire("click");
     expect(p.el("graph-error").textContent).toContain("未登録の系列: sys.loop_hz");
+    expect(p.posted).toEqual([]);
   });
 
   it("toggles a series off the plot and back on", () => {
@@ -826,71 +1109,57 @@ describe("graph panel controls", () => {
 });
 
 describe("graph panel name completion", () => {
-  it("offers every leaf and every struct group above it", () => {
-    const p = boot();
-    p.post({
-      kind: "live-types",
-      tree: { name: "debug" },
-      index: {
-        "sys.loop_hz": LEAF(),
-        "drive.controller.up": LEAF({ size: 1, kind: "bool" }),
-        "drive.controller.down": LEAF({ size: 1, kind: "bool" }),
-        "drive.emergency.req": LEAF({ size: 1, kind: "bool" }),
-      },
+  it("carries no inline datalist: selection is the host QuickPick", () => {
+    // The datalist only ever fed the input's browser-native completion, which
+    // is gone now that 追加 / Enter ask the host (same as the variable tab).
+    const html = graphPanelHtml(["sys.loop_hz"]);
+    expect(html).not.toContain("graph-names");
+    expect(html).not.toContain("<datalist");
+    expect(html).not.toContain('list="');
+    expect(parseGraphPanelMessage({ kind: "var-pick", query: "sys." })).toEqual({
+      kind: "var-pick",
+      name: "",
+      query: "sys.",
     });
-    const values = p.el("graph-names").children.map((o) => o.getAttribute("value"));
-    expect(values).toContain("sys.loop_hz");
-    // Struct nodes are valid graph targets: add() expands them to their
-    // leaves. Hiding them from the picker made it look like it could not do
-    // what it does.
-    expect(values).toContain("drive");
-    expect(values).toContain("drive.controller");
-    expect(values).toContain("drive.emergency");
-    // Groups precede leaves: when the option list is truncated, the names that
-    // survive are the ones carrying a whole subtree. Plain lexicographic order
-    // is deliberately not the contract any more.
-    const isGroup = (v: string | null | undefined): boolean =>
-      typeof v === "string" &&
-      values.some((o) => typeof o === "string" && o !== v && (o.startsWith(v + ".") || o.startsWith(v + "[")));
-    const firstLeaf = values.findIndex((v) => !isGroup(v));
-    for (let i = 0; i < values.length && firstLeaf >= 0; i += 1) {
-      if (isGroup(values[i])) {
-        expect(i, values[i] + " is a group and must precede every leaf").toBeLessThan(firstLeaf);
-      }
-    }
+    expect(parseGraphPanelMessage({ kind: "var-pick", query: 7 })).toBeNull();
   });
+});
 
-  it("a group from the list adds all of its leaves", () => {
-    const p = boot();
+describe("graph panel 未登録 counter", () => {
+  it("counts the names of the CURRENT batch, not every name ever forwarded", () => {
+    // The host forwards the whole sample batch unfiltered, so every watched
+    // name that is not a plotted series lands here. G.unknown was a Set that
+    // was never cleared: it froze at the high-water mark of the whole session
+    // (a stale 389 after the user un-watched those names) instead of counting
+    // what is arriving now.
+    const p = boot(["sys.loop_hz"]);
+    p.post(types(indexOf("sys.loop_hz")));
     p.post({
-      kind: "live-types",
-      tree: { name: "debug" },
-      index: {
-        "drive.controller.up": LEAF({ size: 1, kind: "bool" }),
-        "drive.controller.down": LEAF({ size: 1, kind: "bool" }),
-      },
+      kind: "live-sample",
+      samples: [sample("sys.loop_hz", 1, 0), sample("nav.a", 1, 0), sample("nav.b", 1, 0)],
     });
-    const values = p.el("graph-names").children.map((o) => o.getAttribute("value"));
-    expect(values).toContain("drive.controller");
-    p.el("graph-var-picker").value = "drive.controller";
-    p.el("graph-add").fire("click");
-    expect(p.legendNames()).toEqual(["drive.controller.down", "drive.controller.up"]);
-  });
+    p.flush();
+    expect(p.byId("graph-status").textContent).toContain("未登録 2");
 
-  it("keeps a symbol whose name collides with Object.prototype", () => {
-    // Dedup used to be a plain object, so `constructor` and `toString` were
-    // already "seen" and silently dropped from the candidate list.
-    const p = boot();
     p.post({
-      kind: "live-types",
-      tree: { name: "debug" },
-      index: { constructor: LEAF(), "toString": LEAF(), "valueOf": LEAF(), "sys.loop_hz": LEAF() },
+      kind: "live-sample",
+      samples: [sample("sys.loop_hz", 2, 10), sample("nav.a", 2, 10)],
     });
-    const values = p.el("graph-names").children.map((o) => o.getAttribute("value"));
-    expect(values).toContain("constructor");
-    expect(values).toContain("toString");
-    expect(values).toContain("valueOf");
-    expect(values).toContain("sys.loop_hz");
+    p.flush();
+    expect(p.byId("graph-status").textContent).toContain("未登録 1");
+
+    // A name that becomes a plotted series stops counting at once.
+    p.post({
+      kind: "graph-series",
+      series: [{ name: "sys.loop_hz" }, { name: "nav.a" }],
+    });
+    p.post({
+      kind: "live-sample",
+      samples: [sample("sys.loop_hz", 3, 20), sample("nav.a", 3, 20), sample("nav.b", 3, 20)],
+    });
+    p.flush();
+    expect(p.byId("graph-status").textContent).toContain("未登録 1");
+    expect(p.byId("graph-status").textContent).not.toContain("未登録 2");
   });
 });
 
