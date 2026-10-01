@@ -83,10 +83,12 @@ export function appendAuditToFile(line: string, file: string): void {
   }
 }
 
-/** Default TTY prompt: `y/N`, default N. Only used on a real TTY. */
+/** Default TTY prompt: `y/N`, default N. Writes to stderr: stdout is
+ * reserved for the single-JSON-object contract, so a prompt on stdout would
+ * corrupt the machine-readable reply. Only used on a real TTY. */
 function defaultPrompt(question: string): Promise<string> {
   return new Promise((resolve) => {
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const rl = createInterface({ input: process.stdin, output: process.stderr });
     rl.question(question, (answer) => {
       rl.close();
       resolve(answer);
@@ -168,5 +170,3 @@ export async function gateWrite(
   }
   return verdict;
 }
-
-export { auditLine, isMotorDrivePath, MOTOR_DRIVE_WARNING };

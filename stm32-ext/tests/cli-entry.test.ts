@@ -12,6 +12,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { main, type CliDeps } from "../src/cli/stm32.js";
+import { MOTOR_DRIVE_WARNING } from "../src/live/allowlist.js";
 import type { SpawnResult } from "../src/flash/spawn.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -168,6 +169,23 @@ describe("stm32 set", () => {
     expect(oneJson(cap)["stage"]).toBe("resolve");
     expect(cap.requests).toHaveLength(1);
   });
+
+  it("motor write with --yes warns on stderr while stdout stays pure JSON", async () => {
+    const resolveMotor = ok({
+      ok: true,
+      op: "resolve",
+      symbol: { name: "motor.speed", address: "0x20000008", size: 4, type: "int32_t", kind: "scalar", signed: true },
+    });
+    const setReply = { ok: true, op: "set", name: "motor.speed", readback: "0x00000005", note: "ok" };
+    const { deps, cap } = harness([resolveMotor, ok(setReply)]);
+    const code = await main(["set", "motor.speed", "5", "--mock", "--resolution", FIXTURE, "--yes"], deps);
+    expect(code).toBe(0);
+    expect(oneJson(cap)).toEqual(setReply);
+    expect(cap.stderr.join("")).toContain(MOTOR_DRIVE_WARNING);
+    for (const chunk of cap.stdout) {
+      expect(chunk).not.toContain(MOTOR_DRIVE_WARNING);
+    }
+  });
 });
 
 describe("stm32 ls/info", () => {
@@ -202,6 +220,20 @@ describe("stm32 --mock E2E (real worker, real fixture)", () => {
     const payload = JSON.parse(lines[0] as string) as Record<string, unknown>;
     expect(payload["ok"]).toBe(true);
     expect(String(payload["value"])).toMatch(/^0x[0-9a-f]{8}$/);
+  });
+
+  it("get of a 1-byte symbol returns a 2-digit zero-padded hex value", () => {
+    expect(existsSync(CLI_JS), `compile first: ${CLI_JS} missing`).toBe(true);
+    const out = execFileSync(
+      "node",
+      [CLI_JS, "get", "sys.flag", "--mock", "--resolution", FIXTURE],
+      { encoding: "utf8", env: { ...process.env, ...ENV } },
+    );
+    const lines = out.trim().split("\n");
+    expect(lines).toHaveLength(1);
+    const payload = JSON.parse(lines[0] as string) as Record<string, unknown>;
+    expect(payload["ok"]).toBe(true);
+    expect(String(payload["value"])).toMatch(/^0x[0-9a-f]{2}$/);
   });
 
   it("set without --yes on a non-TTY exits 2 with ok:false", () => {

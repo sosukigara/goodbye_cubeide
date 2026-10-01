@@ -268,8 +268,8 @@ export async function main(argv: readonly string[], deps?: CliDeps | undefined):
         { yes: argv.includes("--yes") },
         {
           isTTY: deps?.isTTY ?? (process.stdin.isTTY === true),
-          // ponytail: policy's default prompt writes to stdout, which would
-          // corrupt the machine-readable stdout contract — ask on stderr.
+          // ponytail: policy's default already asks on stderr (stdout stays
+          // pure JSON); pass the CLI's stderr prompt explicitly anyway.
           prompt: deps?.prompt ?? stderrPrompt,
           stderr: toStderr,
         },
