@@ -89,6 +89,7 @@ import {
   unmount as unmountVariablePanel,
 } from "./live/variablePanel";
 import { WatchBatcher } from "./live/watchBatch";
+import { copyCsvToFile } from "./live/csvExport";
 import { resolveDapLaunch } from "./debug/dapLaunch";
 import {
   BUILD_PANEL_TITLE,
@@ -1539,9 +1540,14 @@ export class LivePanelProvider {
   }
   /**
    * P0-2: the button did nothing because `this.view` is never set any more,
-   * so the guard returned before writing a byte. The export now also prefers
+   * so the guard returned before writing a byte. The export also prefers
    * the sidecar's own CSV over the in-memory ring: the ring is capped at
    * 5000 rows, the file holds everything since the last rotation (D-11).
+   *
+   * S1-2: reading that file whole froze the host. One generation is ~193 MB
+   * at 220 leaves x 100 Hz, so the copy streams in bounded chunks that yield
+   * between them; the in-memory ring stays the fallback for a session CSV
+   * that is missing or not the frozen schema.
    */
   private async exportCsv(): Promise<void> {
     const folder = vscode.workspace.workspaceFolders?.[0];
@@ -1549,36 +1555,29 @@ export class LivePanelProvider {
       void vscode.window.showErrorMessage("ワークスペースが開かれていません: CSV を書き出せません");
       return;
     }
-    const fromFile = this.readSessionCsv();
-    const body = fromFile ?? formatCsv(this.samples);
-    const rows = body.split("\n").filter((l) => l.trim() !== "").length - 1;
     const uri = vscode.Uri.joinPath(folder.uri, "live.csv");
+    const copied = this.csvPath === ""
+      ? undefined
+      : await copyCsvToFile(this.csvPath, join(folder.uri.fsPath, "live.csv"));
+    if (copied?.ok === true) {
+      const how = `${copied.rows} rows (${this.csvPath})`;
+      this.channel.appendLine(`[live] CSV exported: ${uri.fsPath} (${how}, schema timestamp,address,name,value)`);
+      void vscode.window.showInformationMessage(`Live CSV を保存しました: ${uri.fsPath} (${how})`);
+      return;
+    }
+    if (copied?.cause === "io") {
+      // The destination itself failed: there is nothing to fall back to.
+      this.channel.appendLine(`[live] CSV export failed: ${copied.reason}`);
+      void vscode.window.showErrorMessage(`Live CSV を書き出せませんでした: ${copied.reason}`);
+      return;
+    }
+    if (copied !== undefined) {
+      this.slog(`session csv not exportable: ${copied.reason}`);
+    }
+    const body = formatCsv(this.samples);
     await vscode.workspace.fs.writeFile(uri, Buffer.from(body, "utf8"));
-    const how = fromFile === undefined
-      ? `${this.samples.length} rows (memory)`
-      : `${Math.max(0, rows)} rows (${this.csvPath})`;
-    this.channel.appendLine(`[live] CSV exported: ${uri.fsPath} (${how}, schema timestamp,address,name,value)`);
-    void vscode.window.showInformationMessage(`Live CSV を保存しました: ${uri.fsPath} (${how})`);
-  }
-  /** Whole sidecar CSV (header included), or undefined when unusable. */
-  private readSessionCsv(): string | undefined {
-    if (this.csvPath === "") {
-      return undefined;
-    }
-    let text: string;
-    try {
-      text = readFileSync(this.csvPath, "utf8");
-    } catch {
-      return undefined;
-    }
-    const first = text.slice(0, text.indexOf("\n") < 0 ? text.length : text.indexOf("\n"));
-    try {
-      assertCsvHeader(first.replace(/\r$/, ""));
-    } catch (err) {
-      this.slog(`session csv not exportable: ${err instanceof Error ? err.message : String(err)}`);
-      return undefined;
-    }
-    return text.endsWith("\n") ? text : `${text}\n`;
+    this.channel.appendLine(`[live] CSV exported: ${uri.fsPath} (${this.samples.length} rows (memory), schema timestamp,address,name,value)`);
+    void vscode.window.showInformationMessage(`Live CSV を保存しました: ${uri.fsPath} (${this.samples.length} rows (memory))`);
   }
 
   /**
@@ -2599,7 +2598,6 @@ class SidebarProvider implements vscode.WebviewViewProvider {
       case "live-write":
         await this.deps.livePanel.handleLiveAction("write", msg.name, msg.value);
         return;
-      case "live-remove":
       case "live-remove-names":
         await this.deps.livePanel.handleLiveAction("remove-names", [msg.name, ...(msg.names ?? [])].join(","));
         return;
