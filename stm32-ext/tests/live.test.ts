@@ -239,13 +239,15 @@ describe("allowlist writes", () => {
   });
 
   it("the modals unrelated to the write gate are untouched", () => {
-    // Probe-conflict, force-stop, force-reclaim and both flash confirmations are
-    // separate gates; the write dialog must not have replaced or renamed them.
+    // Probe-conflict, force-stop and force-reclaim are separate gates; the
+    // write dialog must not have replaced or renamed them. Flash confirmations
+    // were intentionally removed (the ELF picker / successful build is the
+    // explicit intent), so they must NOT come back.
     expect(source).toContain("プローブ競合の可能性");
     expect(source).toContain("強制終了しますか?");
     expect(source).toContain("強制的に取り直しますか?");
-    expect(source).toContain("Flash ${elfPath}? This overwrites target firmware.");
-    expect(source).toContain("Build OK. Flash ${elfPath}? This overwrites target firmware.");
+    expect(source).not.toContain("Flash ${elfPath}? This overwrites target firmware.");
+    expect(source).not.toContain("Build OK. Flash ${elfPath}? This overwrites target firmware.");
     expect(source).toContain("{ modal: true }");
   });
 });

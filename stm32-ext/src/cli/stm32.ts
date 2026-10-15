@@ -1,4 +1,5 @@
-// CLI entry: `get|set|ls|info|setup` dispatch over scripts/probe_op.py.
+// CLI entry: `get|set|ls|info|setup|flash|poll` dispatch over scripts/probe_op.py
+// (flash goes through src/flash/pyocd.ts instead).
 //
 // Thin glue only: preflight (preflight.ts), ELF/target + resolve (resolve.ts),
 // the write gate (policy.ts), and explicit setup (setup.ts) are the
@@ -14,6 +15,8 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { sidecarPython } from "../env/venv.js";
+import { DEFAULT_FLASH_SETTINGS, type FlashResult } from "../flash/backend.js";
+import { runPyocdFlash } from "../flash/pyocd.js";
 import type { SpawnResult } from "../flash/spawn.js";
 import { gateWrite } from "./policy.js";
 import { checkPreflight, type PreflightVerdict } from "./preflight.js";
@@ -28,7 +31,7 @@ import {
 import { runSetup, type SetupResult } from "./setup.js";
 
 /** Flags that consume the following argv token. */
-const VALUE_FLAGS = new Set(["--resolution", "--elf", "--target"]);
+const VALUE_FLAGS = new Set(["--resolution", "--elf", "--target", "--interval-ms", "--count"]);
 
 /** Split argv into the command plus its positional args, skipping flags. */
 function splitCommand(argv: readonly string[]): { cmd: string | undefined; args: string[] } {
@@ -70,7 +73,9 @@ function usage(): string {
     "  ls                    list watchable symbols",
     "  info                  probe/pyocd/elf checks (always exit 0)",
     "  setup                 install pyocd + pyelftools into the CLI venv",
-    "options: --elf <path> --target <id> --resolution <path> --mock --yes --help",
+    "  flash <elf>           write firmware via pyOCD (TTY prompt or --yes, --dry-run)",
+    "  poll <name...>        sample live symbols N times (--count/--interval-ms)",
+    "options: --elf <path> --target <id> --resolution <path> --mock --yes --dry-run --count <n> --interval-ms <n> --help",
     "env: STM32_ELF STM32_TARGET",
   ].join("\n");
 }
@@ -96,6 +101,10 @@ export interface CliDeps {
   readonly preflight?: (() => Promise<PreflightVerdict>) | undefined;
   /** Setup override. Defaults to the real CLI-venv setup. */
   readonly setup?: (() => Promise<SetupResult>) | undefined;
+  /** Flash override. Defaults to the real pyOCD flash runner. */
+  readonly flashRunner?:
+    | ((mcu: string, req: { elfPath: string; confirmed: boolean; dryRun?: boolean }) => Promise<FlashResult>)
+    | undefined;
 }
 
 /** Spawn the worker: ONE JSON object on stdin, ONE JSON object on stdout. */
@@ -188,14 +197,17 @@ export async function main(argv: readonly string[], deps?: CliDeps | undefined):
   const python = sidecarPython(venvDir, process.platform);
   const mock = argv.includes("--mock");
 
-  /** ONE worker spawn; the reply goes to stdout verbatim, code propagates. */
-  const runWorker = async (op: string, request: Record<string, unknown>): Promise<number> => {
+  /** ONE worker spawn returning the parsed payload (no stdout emission). */
+  const callWorker = async (
+    op: string,
+    request: Record<string, unknown>,
+  ): Promise<{ payload: unknown; exitCode: number } | { error: string }> => {
     let result: SpawnResult;
     try {
       result = await spawnWorker(python, script, JSON.stringify(request), RESOLVE_TIMEOUT_MS);
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
-      return fail(op, "op", `cannot run probe worker (${script}): ${detail}`);
+      return { error: `cannot run probe worker (${script}): ${detail}` };
     }
     if (result.stderr !== "") {
       toStderr(result.stderr);
@@ -206,10 +218,19 @@ export async function main(argv: readonly string[], deps?: CliDeps | undefined):
     } catch {
       const tail = result.stderr.trim().split("\n").filter((l) => l.trim() !== "").pop()
         ?? `exit=${result.exitCode}`;
-      return fail(op, "op", `worker ${op} returned non-JSON output: ${tail}`);
+      return { error: `worker ${op} returned non-JSON output: ${tail}` };
     }
-    emit(payload);
-    return result.exitCode;
+    return { payload, exitCode: result.exitCode };
+  };
+
+  /** ONE worker spawn; the reply goes to stdout verbatim, code propagates. */
+  const runWorker = async (op: string, request: Record<string, unknown>): Promise<number> => {
+    const out = await callWorker(op, request);
+    if ("error" in out) {
+      return fail(op, "op", out.error);
+    }
+    emit(out.payload);
+    return out.exitCode;
   };
 
   const { cmd, args } = splitCommand(argv);
@@ -318,13 +339,114 @@ export async function main(argv: readonly string[], deps?: CliDeps | undefined):
       return result.ok ? 0 : 2;
     }
 
+    case "flash": {
+      const elfArg = args[0];
+      if (elfArg === undefined || elfArg.trim() === "") {
+        return fail("flash", "preflight", "usage: stm32 flash <elf> [--target <id>] [--yes] [--dry-run]");
+      }
+      const pf = await (deps?.preflight ?? checkPreflight)();
+      if (!pf.ok) {
+        return fail("flash", "preflight", pf.error);
+      }
+      // Reuse the ELF/target authority; the positional <elf> wins over --elf/STM32_ELF.
+      const paths = resolveCliPaths(
+        elfArg.trim() !== "" ? ["--elf", elfArg, ...argv.filter((t) => t !== elfArg)] : argv,
+        env,
+      );
+      if (!paths.ok) {
+        return fail("flash", "resolve", paths.error);
+      }
+      if (!paths.elf.endsWith(".elf")) {
+        return fail("flash", "resolve", `Flash refused: expected an .elf file, got "${paths.elf}".`);
+      }
+      const dryRun = argv.includes("--dry-run");
+      // set-command parity: --yes supplies confirmation, otherwise a TTY
+      // prompt on stderr (stdout stays pure JSON); non-TTY without --yes refuses.
+      let confirmed = argv.includes("--yes");
+      if (!confirmed && !dryRun) {
+        if (!(deps?.isTTY ?? (process.stdin.isTTY === true))) {
+          return fail("flash", "op", "Flash refused: user confirmation required (pass --yes or run on a TTY).");
+        }
+        const answer = await (deps?.prompt ?? stderrPrompt)(`Flash ${paths.elf}? This overwrites target firmware. [y/N] `);
+        confirmed = /^\s*y(es)?\s*$/i.test(answer);
+      }
+      if (!confirmed && !dryRun) {
+        return fail("flash", "op", "Flash refused: user confirmation required (confirmless write is forbidden).");
+      }
+      const run = deps?.flashRunner
+        ?? ((mcu: string, req: { elfPath: string; confirmed: boolean; dryRun?: boolean }) =>
+          runPyocdFlash(mcu, DEFAULT_FLASH_SETTINGS, req));
+      let result: FlashResult;
+      try {
+        result = await run(paths.target, { elfPath: paths.elf, confirmed: true, ...(dryRun ? { dryRun: true } : {}) });
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        return fail("flash", "op", `flash runner failed: ${detail}`);
+      }
+      for (const line of result.details ?? []) {
+        toStderr(`${line}\n`);
+      }
+      emit({ ok: result.ok, op: "flash", command: result.command, message: result.message, ...(result.dryRun === true ? { dryRun: true } : {}) });
+      return result.ok ? 0 : 1;
+    }
+
+    case "poll": {
+      if (args.length === 0) {
+        return fail("poll", "preflight", "usage: stm32 poll <name...> [--elf <path>] [--target <id>] [--resolution <path>] [--count <n>] [--interval-ms <n>] [--mock]");
+      }
+      const pf = await (deps?.preflight ?? checkPreflight)();
+      if (!pf.ok) {
+        return fail("poll", "preflight", pf.error);
+      }
+      const paths = resolveCliPaths(argv, env);
+      if (!paths.ok) {
+        return fail("poll", "resolve", paths.error);
+      }
+      const countRaw = nonBlank(argValue(argv, "--count")) ?? "10";
+      const intervalRaw = nonBlank(argValue(argv, "--interval-ms")) ?? "100";
+      const count = Number.parseInt(countRaw, 10);
+      const intervalMs = Number.parseInt(intervalRaw, 10);
+      if (!Number.isSafeInteger(count) || count < 1 || count > 10000) {
+        return fail("poll", "preflight", `invalid --count: ${countRaw} (want 1..10000)`);
+      }
+      if (!Number.isSafeInteger(intervalMs) || intervalMs < 0 || intervalMs > 60000) {
+        return fail("poll", "preflight", `invalid --interval-ms: ${intervalRaw} (want 0..60000)`);
+      }
+      const samples: unknown[] = [];
+      for (let tick = 0; tick < count; tick++) {
+        for (const name of args) {
+          const out = await callWorker("get", {
+            op: "get",
+            name,
+            elf: paths.elf,
+            target: paths.target,
+            mock,
+            ...(paths.resolution === undefined ? {} : { resolution: paths.resolution }),
+          });
+          if ("error" in out) {
+            return fail("poll", "op", out.error);
+          }
+          samples.push({ tick, name, ...(isRecord(out.payload) ? out.payload : { value: out.payload }) });
+          if (out.exitCode !== 0) {
+            emit({ ok: false, op: "poll", stage: "op", samples, error: `worker get exited ${out.exitCode}` });
+            return out.exitCode;
+          }
+        }
+        if (tick + 1 < count && intervalMs > 0) {
+          await new Promise((r) => setTimeout(r, intervalMs));
+        }
+      }
+      emit({ ok: true, op: "poll", count, intervalMs, samples });
+      return 0;
+    }
+
     default: {
       return fail(
         cmd ?? null,
         "preflight",
         cmd === undefined
-          ? `usage: stm32 <get|set|ls|info|setup> [options] (try --help)`
-          : `unknown command: ${cmd} (want get|set|ls|info|setup)`,
+          ? `usage: stm32 <get|set|ls|info|setup|flash|poll> [options] (try --help)`
+          : `unknown command: ${cmd} (want get|set|ls|info|setup|flash|poll)`,
       );
     }
   }

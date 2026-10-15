@@ -2035,17 +2035,9 @@ async function flashElfFlow(
   if (!elfPath) {
     return;
   }
-  const confirm = await vscode.window.showWarningMessage(
-    `Flash ${elfPath}? This overwrites target firmware.`,
-    { modal: true },
-    "Flash",
-  );
-  if (confirm !== "Flash") {
-    return;
-  }
-  // Self-probe reclaim: this window's session stops here (covered by the
-  // Flash modal above), plus orphaned own live_poll.py processes are
-  // SIGTERMed by scripts-dir marker match only.
+  // No confirm modal: the ELF picker above is the explicit user intent.
+  // Self-probe reclaim: this window's session stops here, plus orphaned
+  // own live_poll.py processes are SIGTERMed by scripts-dir marker match only.
   const spare = live?.pollPid;
   const hadLive = spare !== undefined;
   await live?.stop();
@@ -2137,17 +2129,10 @@ async function buildAndFlashFlow(
   if (elfPath === undefined) {
     return;
   }
-  const confirm = await vscode.window.showWarningMessage(
-    `Build OK. Flash ${elfPath}? This overwrites target firmware.`,
-    { modal: true },
-    "Build & Flash",
-  );
-  if (confirm !== "Build & Flash") {
-    return;
-  }
+  // No confirm modal: a successful build is the explicit user intent.
   // Self-probe reclaim AFTER the build: buildProjectFlow re-resolved the ELF
-  // and restarted Live above, so stop this window's session now (covered by
-  // the Build & Flash modal) + SIGTERM orphaned own live_poll.py by marker.
+  // and restarted Live above, so stop this window's session now
+  // + SIGTERM orphaned own live_poll.py by marker.
   const spare = live?.pollPid;
   const hadLive = spare !== undefined;
   await live?.stop();
