@@ -95,6 +95,65 @@ def test_get_stale_symbol_refused():
     assert "(not in ELF resolution)" in out["error"]
 
 
+def test_poll_samples_count_times_names():
+    code, out, _ = run_op(base_req(
+        "poll", names=["sys.u32", "sys.flag"], count=3, interval_ms=0))
+    assert code == 0
+    assert out["ok"] is True
+    assert out["count"] == 3 and out["intervalMs"] == 0
+    assert [(s["tick"], s["name"]) for s in out["samples"]] == [
+        (0, "sys.u32"), (0, "sys.flag"),
+        (1, "sys.u32"), (1, "sys.flag"),
+        (2, "sys.u32"), (2, "sys.flag"),
+    ]
+    for s in out["samples"]:
+        width = 8 if s["size"] == 4 else 2
+        assert re.fullmatch(rf"0x[0-9a-f]{{{width}}}", s["value"])
+
+
+def test_poll_resolves_every_name_before_touching_the_bus():
+    """A typo must fail as a resolve error, not halfway through the run."""
+    code, out, _ = run_op(base_req(
+        "poll", names=["sys.u32", "sys.gone"], count=2, interval_ms=0))
+    assert code == 2
+    assert out["stage"] == "resolve"
+    assert "(not in ELF resolution)" in out["error"]
+    assert "samples" not in out
+
+
+def test_poll_rejects_bad_count_and_interval():
+    for key, value in (("count", 0), ("count", 10001), ("interval_ms", -1),
+                       ("interval_ms", 60001)):
+        code, out, _ = run_op(base_req("poll", names=["sys.u32"], **{key: value}))
+        assert code == 2, (key, value)
+        assert out["stage"] == "preflight"
+        assert key in out["error"]
+
+
+def test_poll_needs_a_non_empty_name_list():
+    for names in (None, [], ["ok", ""]):
+        code, out, _ = run_op(base_req("poll", names=names))
+        assert code == 2, names
+        assert out["stage"] == "preflight"
+
+
+def test_merge_symbols_union_is_name_keyed_and_base_wins():
+    """Both elf_resolve modes are near-disjoint; the union must keep both."""
+    import probe_op
+
+    base = {"symbols": [
+        {"name": "only.base", "address": "0x20000000", "size": 4},
+        {"name": "shared", "address": "0x20000004", "size": 4},
+    ]}
+    extra = {"symbols": [
+        {"name": "shared", "address": "0x20000099", "size": 4},
+        {"name": "only.catalog", "address": "0x20000008", "size": 4},
+    ]}
+    merged = probe_op._merge_symbols(base, extra)
+    assert [s["name"] for s in merged] == ["only.base", "shared", "only.catalog"]
+    assert {s["name"]: s["address"] for s in merged}["shared"] == "0x20000004"
+
+
 def _set_req(name, address, size, value):
     return base_req("set", name=name, address=address, size=size,
                     base=address, symbolSize=size, value=value)

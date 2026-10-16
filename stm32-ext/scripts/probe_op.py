@@ -2,7 +2,7 @@
 """One-shot probe worker for the stm32 CLI (task T1).
 
 Reads ONE JSON document from stdin, executes one op
-(`resolve|get|set|list|info`), writes ONE JSON document to stdout.
+(`resolve|get|set|list|info|poll`), writes ONE JSON document to stdout.
 Human diagnostics go to stderr. Takes NO argv: everything arrives
 through the stdin JSON.
 
@@ -24,6 +24,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from stm32_dap import Target, MockTarget, parse_set_value, load_resolution
@@ -36,7 +37,7 @@ EXIT_NO_PROBE = 3
 EXIT_USB = 5
 EXIT_NO_WATCH = 6
 
-OPS = ("resolve", "get", "set", "list", "info")
+OPS = ("resolve", "get", "set", "list", "info", "poll")
 WRITE_WIDTHS = (1, 2, 4, 8)
 RESOLVE_TIMEOUT = 60
 
@@ -66,28 +67,14 @@ def _fail(op, stage, message, code):
     return {"ok": False, "op": op, "stage": stage, "error": message}, code
 
 
-def load_res(elf, resolution_path):
-    """Resolution object, same shape `stm32_dap.load_resolution` returns.
-
-    A non-null `resolution` path skips elf_resolve and loads that JSON
-    file. Otherwise `elf_resolve.py --all-members --json` runs with a
-    60s timeout (not the DAP default 300: an interactive CLI budget).
-    """
-    if resolution_path:
-        try:
-            return load_resolution(None, resolution_path)
-        except Exception as e:
-            raise ResolutionError(
-                f"cannot load resolution {resolution_path!r}: {e}")
-    if not elf:
-        raise ResolutionError("no ELF: pass --elf or STM32_ELF "
-                              "(or --resolution <path>)")
+def _elf_resolve(elf, mode):
+    """One `elf_resolve.py <mode> --json` run, or ResolutionError."""
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "elf_resolve.py")
     try:
-        p = subprocess.run(
-            [sys.executable, script, elf, "--all-members", "--json"],
-            capture_output=True, text=True, timeout=RESOLVE_TIMEOUT)
+        p = subprocess.run([sys.executable, script, elf, mode, "--json"],
+                           capture_output=True, text=True,
+                           timeout=RESOLVE_TIMEOUT)
     except subprocess.TimeoutExpired:
         raise ResolutionError(
             f"elf_resolve timed out after {RESOLVE_TIMEOUT}s (elf={elf})")
@@ -98,6 +85,49 @@ def load_res(elf, resolution_path):
         return json.loads(p.stdout)
     except json.JSONDecodeError as e:
         raise ResolutionError(f"elf_resolve returned bad JSON: {e}")
+
+
+def _merge_symbols(base, extra):
+    """Union by name. `base` wins; `extra` only adds names it does not have.
+
+    The two modes are near-disjoint, not nested: measured on unit_omni3,
+    `--all-members` yields 338 DebugGlobal leaves and `--catalog` 4291 RAM
+    roots, sharing only 10 names. Neither is a superset, so resolving against
+    one silently hides most of what the other can address — the asymmetry
+    that made `ls` advertise `robot.yaw` while `get` refused it, and hid
+    `sys.loop_min_us` from `ls` while `get` could read it. Base-wins keeps
+    the DebugGlobal decl order and the exact entries `get` returned before.
+    """
+    out = {s["name"]: s for s in base.get("symbols", [])
+           if isinstance(s, dict) and s.get("name")}
+    for s in extra.get("symbols", []):
+        if isinstance(s, dict) and s.get("name") and s["name"] not in out:
+            out[s["name"]] = s
+    return list(out.values())
+
+
+def load_res(elf, resolution_path):
+    """Resolution object, same shape `stm32_dap.load_resolution` returns.
+
+    A non-null `resolution` path skips elf_resolve and loads that JSON
+    file. Otherwise `elf_resolve.py` runs twice (`--all-members`,
+    `--catalog`) and the two symbol lists are unioned, so one loader
+    defines what every op can address.
+    """
+    if resolution_path:
+        try:
+            return load_resolution(None, resolution_path)
+        except Exception as e:
+            raise ResolutionError(
+                f"cannot load resolution {resolution_path!r}: {e}")
+    if not elf:
+        raise ResolutionError("no ELF: pass --elf or STM32_ELF "
+                              "(or --resolution <path>)")
+    base = _elf_resolve(elf, "--all-members")
+    catalog = _elf_resolve(elf, "--catalog")
+    merged = dict(base)
+    merged["symbols"] = _merge_symbols(base, catalog)
+    return merged
 
 
 def resolve_symbol(res, name):
@@ -197,6 +227,77 @@ def do_get(req):
         tgt.close()
 
 
+def do_poll(req):
+    """N samples of M names over ONE attach.
+
+    The single attach is the point: spawning a worker per sample makes the
+    effective period the attach cost (~4s measured), not `interval_ms`. Every
+    name is resolved before the bus is touched, so a typo fails fast instead
+    of midway through a long run. Read-only, never writes.
+    """
+    op = "poll"
+    names = req.get("names")
+    if not isinstance(names, list) or not names or \
+            not all(isinstance(n, str) and n for n in names):
+        return _fail(op, "preflight",
+                     "missing `names` (non-empty list of strings)", EXIT_USAGE)
+    try:
+        count = _to_int(req.get("count", 10), "count")
+        interval_ms = _to_int(req.get("interval_ms", 100), "interval_ms")
+    except ValueError as e:
+        return _fail(op, "preflight", str(e), EXIT_USAGE)
+    if not 1 <= count <= 10000:
+        return _fail(op, "preflight", f"count out of range: {count}",
+                     EXIT_USAGE)
+    if not 0 <= interval_ms <= 60000:
+        return _fail(op, "preflight",
+                     f"interval_ms out of range: {interval_ms}", EXIT_USAGE)
+    try:
+        res = load_res(req.get("elf"), req.get("resolution"))
+    except ResolutionError as e:
+        return _fail(op, "resolve", str(e), EXIT_USAGE)
+    syms = []
+    for name in names:
+        sym, problem = resolve_symbol(res, name)
+        if sym is None:
+            return _fail(op, "resolve", problem, EXIT_USAGE)
+        syms.append(sym)
+    tgt, payload, code = _attach_or_fail(op, req.get("target"),
+                                         bool(req.get("mock")))
+    if tgt is None:
+        return payload, code
+    samples = []
+    try:
+        for tick in range(count):
+            for sym in syms:
+                try:
+                    raw = tgt.read_member(int(sym["address"], 0), sym["size"])
+                except Exception as e:  # noqa: BLE001 - bus error, not a crash
+                    # Partial samples are the useful answer: a monitoring run
+                    # that read 40 of 100 points must not throw them away.
+                    failed, code = _fail(
+                        op, "op", f"{type(e).__name__}: {e} "
+                        f"(after {len(samples)} samples)", EXIT_NO_WATCH)
+                    failed["samples"] = samples
+                    return failed, code
+                samples.append({
+                    "tick": tick,
+                    "name": sym["name"],
+                    "address": sym["address"],
+                    "size": sym["size"],
+                    "type": sym["type"],
+                    "kind": sym["kind"],
+                    "signed": sym["signed"],
+                    "value": f"0x{int(raw):0{sym['size'] * 2}x}",
+                })
+            if tick + 1 < count and interval_ms > 0:
+                time.sleep(interval_ms / 1000.0)
+    finally:
+        tgt.close()
+    return {"ok": True, "op": op, "count": count, "intervalMs": interval_ms,
+            "samples": samples}, EXIT_OK
+
+
 def do_set(req):
     op = "set"
     for key in ("address", "size", "base", "symbolSize", "value"):
@@ -268,39 +369,10 @@ def do_set(req):
 
 def do_list(req):
     op = "list"
-    resolution = req.get("resolution")
+    # Same resolution authority as get/set/poll: listing what cannot be read
+    # (or hiding what can) is the bug this shares a loader with.
     try:
-        if resolution:
-            try:
-                res = load_resolution(None, resolution)
-            except Exception as e:
-                raise ResolutionError(
-                    f"cannot load resolution {resolution!r}: {e}")
-        else:
-            elf = req.get("elf")
-            if not elf:
-                return _fail(op, "preflight",
-                             "no ELF: pass --elf or STM32_ELF "
-                             "(or --resolution <path>)", EXIT_USAGE)
-            script = os.path.join(
-                os.path.dirname(os.path.abspath(__file__)),
-                "elf_resolve.py")
-            try:
-                p = subprocess.run(
-                    [sys.executable, script, elf, "--catalog", "--json"],
-                    capture_output=True, text=True,
-                    timeout=RESOLVE_TIMEOUT)
-            except subprocess.TimeoutExpired:
-                raise ResolutionError(
-                    f"elf_resolve timed out after {RESOLVE_TIMEOUT}s")
-            if p.returncode != 0:
-                tail = (p.stderr or p.stdout).strip()[-300:]
-                raise ResolutionError(f"elf_resolve failed: {tail}")
-            try:
-                res = json.loads(p.stdout)
-            except json.JSONDecodeError as e:
-                raise ResolutionError(
-                    f"elf_resolve returned bad JSON: {e}")
+        res = load_res(req.get("elf"), req.get("resolution"))
     except ResolutionError as e:
         return _fail(op, "resolve", str(e), EXIT_USAGE)
     symbols = res.get("symbols", [])
@@ -361,6 +433,8 @@ def run(req):
         return do_list(req)
     if op == "info":
         return do_info(req)
+    if op == "poll":
+        return do_poll(req)
     if op is None:
         return _fail(None, "preflight", "missing `op` "
                      f"(want one of {'|'.join(OPS)})", EXIT_USAGE)

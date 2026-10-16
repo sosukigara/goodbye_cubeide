@@ -164,10 +164,6 @@ function stderrPrompt(question: string): Promise<string> {
   });
 }
 
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null;
-}
-
 /**
  * Dispatch one CLI invocation. Async only because the worker spawn, the
  * preflight check, and the write gate are async — the contract shape otherwise
@@ -201,10 +197,11 @@ export async function main(argv: readonly string[], deps?: CliDeps | undefined):
   const callWorker = async (
     op: string,
     request: Record<string, unknown>,
+    timeoutMs: number = RESOLVE_TIMEOUT_MS,
   ): Promise<{ payload: unknown; exitCode: number } | { error: string }> => {
     let result: SpawnResult;
     try {
-      result = await spawnWorker(python, script, JSON.stringify(request), RESOLVE_TIMEOUT_MS);
+      result = await spawnWorker(python, script, JSON.stringify(request), timeoutMs);
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       return { error: `cannot run probe worker (${script}): ${detail}` };
@@ -224,8 +221,12 @@ export async function main(argv: readonly string[], deps?: CliDeps | undefined):
   };
 
   /** ONE worker spawn; the reply goes to stdout verbatim, code propagates. */
-  const runWorker = async (op: string, request: Record<string, unknown>): Promise<number> => {
-    const out = await callWorker(op, request);
+  const runWorker = async (
+    op: string,
+    request: Record<string, unknown>,
+    timeoutMs: number = RESOLVE_TIMEOUT_MS,
+  ): Promise<number> => {
+    const out = await callWorker(op, request, timeoutMs);
     if ("error" in out) {
       return fail(op, "op", out.error);
     }
@@ -412,32 +413,26 @@ export async function main(argv: readonly string[], deps?: CliDeps | undefined):
       if (!Number.isSafeInteger(intervalMs) || intervalMs < 0 || intervalMs > 60000) {
         return fail("poll", "preflight", `invalid --interval-ms: ${intervalRaw} (want 0..60000)`);
       }
-      const samples: unknown[] = [];
-      for (let tick = 0; tick < count; tick++) {
-        for (const name of args) {
-          const out = await callWorker("get", {
-            op: "get",
-            name,
-            elf: paths.elf,
-            target: paths.target,
-            mock,
-            ...(paths.resolution === undefined ? {} : { resolution: paths.resolution }),
-          });
-          if ("error" in out) {
-            return fail("poll", "op", out.error);
-          }
-          samples.push({ tick, name, ...(isRecord(out.payload) ? out.payload : { value: out.payload }) });
-          if (out.exitCode !== 0) {
-            emit({ ok: false, op: "poll", stage: "op", samples, error: `worker get exited ${out.exitCode}` });
-            return out.exitCode;
-          }
-        }
-        if (tick + 1 < count && intervalMs > 0) {
-          await new Promise((r) => setTimeout(r, intervalMs));
-        }
-      }
-      emit({ ok: true, op: "poll", count, intervalMs, samples });
-      return 0;
+      // ONE worker call: the worker attaches once and samples N times, so
+      // `--interval-ms` is the real period. Spawning per sample made the
+      // period the attach cost (~4.3s measured) instead.
+      //
+      // The spawn budget must cover resolution (two elf_resolve runs) plus
+      // every tick: the default 60s would SIGKILL a long poll mid-run.
+      const pollTimeoutMs = Math.min(
+        RESOLVE_TIMEOUT_MS * 2 + count * (intervalMs + 1000),
+        30 * 60_000,
+      );
+      return runWorker("poll", {
+        op: "poll",
+        names: args,
+        count,
+        interval_ms: intervalMs,
+        elf: paths.elf,
+        target: paths.target,
+        mock,
+        ...(paths.resolution === undefined ? {} : { resolution: paths.resolution }),
+      }, pollTimeoutMs);
     }
 
     default: {
