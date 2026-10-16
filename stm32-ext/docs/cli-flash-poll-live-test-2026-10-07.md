@@ -161,10 +161,52 @@ get sys.loop_min_us→ ok, 0x20000448, size 4
 `{"ok":false,"stage":"op","error":"refused: modal confirmation not given"}`
 で拒否され、書き込みは発生しない。
 
+### インストール版での最終確認
+
+`~/.vscode/extensions/goodbye-cubeide.stm32-ext-2.0.6` の CLI を実機で実行
+(`--count 3 --interval-ms 1000`):
+
+| tick | uptime_ms | 差 | drive.motor_timeout | robot.yaw |
+|---|---|---|---|---|
+| 0 | 977878 | — | true | 0.0000 rad |
+| 1 | 978878 | 1000 ms | true | 0.0000 rad |
+| 2 | 979880 | 1002 ms | true | 0.0000 rad |
+
+要求 1000 ms に対し実測 1000/1002 ms。`robot.yaw` は catalog 側にしか無い
+シンボルで、B 修正前に `get` が拒否していたもの。コマンド全体 6.0 秒。
+
+### C. インストール版 CLI は cwd 依存 (未修正・新発見)
+
+`node <ext>/out/cli/stm32.js ls --elf <elf>` は、cwd が extension の
+インストール先 (またはその配下) でないと動かない:
+
+```
+cwd = firmware プロジェクト
+→ {"ok":false,"op":"list","stage":"op",
+   "error":"worker list returned non-JSON output: python3: can't open file
+   '<cwd>/scripts/probe_op.py': [Errno 2] No such file or directory"}
+```
+
+原因は `src/cli/resolve.ts` の `defaultProbeOpScript()` が
+`process.cwd()` から最大 6 階層遡って `scripts/probe_op.py` を探し、
+見つからなければ `join(cwd, "scripts/probe_op.py")` を返すため。
+worker の実体は extension 側 (`<ext>/scripts/probe_op.py`) にあり、
+`STM32_PROBE_OP` のような上書き用の環境変数も無い
+(`resolveCliPaths` が読むのは `XDG_DATA_HOME` / `STM32_ELF` / `STM32_TARGET` のみ)。
+
+本変更で導入した不具合ではなく以前からの挙動で、A/B とは独立。修正するなら
+`defaultProbeOpScript` の探索に「実行中スクリプト自身の位置
+(`<ext>/out/cli` → `<ext>/scripts`)」を候補として加えるのが最小。
+
 ### 未対応 (本変更のスコープ外)
 
 - `sys.loop_hz` (1430 Hz) と `sys.loop_period_us` (454 µs = 2202 Hz) は
   1.5 倍ほど食い違う。計測ウィンドウが違う可能性が高いが未確認。
 - 高レート監視は従来どおり `scripts/live_poll.py` (常時接続サイドカー) の担当。
-  CLI `poll` は「AI が数点サンプルして状態を確認する」用途。
+  CLI `poll` は「AI が数点サンプルして状態を確認する」用途。今回の実測では
+  解決 (elf_resolve 2 回) + attach に約 3 秒の固定費が乗る。
+- テスト `tests/csv-export.test.ts > never holds more than one chunk in memory`
+  は `heapUsed` 計測のフレーク。本変更とは無関係 (`src/live/csvExport.js` のみ
+  import) で、単独実行では 5 回連続 pass、並列実行時に落ちることがある。
+
 
