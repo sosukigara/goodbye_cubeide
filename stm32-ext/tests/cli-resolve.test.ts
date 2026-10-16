@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { STRIP_HINT } from "../src/live/elfResolver.js";
 import {
   RESOLVE_EXIT_CODE,
+  defaultProbeOpScript,
   resolveCliPaths,
   resolveSymbol,
   type CliPathsResult,
@@ -353,5 +354,67 @@ describe("resolveSymbol failure mapping (all exit-code-equivalent 2)", () => {
       expect(v.exitCode).toBe(2);
     }
     expect(c.calls).toHaveLength(0);
+  });
+});
+
+// The installed CLI runs from the user's firmware project, where
+// scripts/probe_op.py does not exist; the sidecar ships inside the extension
+// at <ext>/scripts/probe_op.py, two levels above the compiled out/cli module.
+describe("defaultProbeOpScript", () => {
+  const EXT = "/home/u/.vscode/extensions/goodbye-cubeide.stm32-ext-2.0.6";
+  const FW = "/home/u/fw/unit_omni3";
+
+  function fakeFs(present: readonly string[]): (p: string) => boolean {
+    const set = new Set(present);
+    return (p) => set.has(p);
+  }
+
+  it("prefers the cwd tree over the module tree", () => {
+    const cwdCopy = join(FW, "scripts", "probe_op.py");
+    const moduleCopy = join(EXT, "scripts", "probe_op.py");
+    expect(defaultProbeOpScript(FW, fakeFs([cwdCopy, moduleCopy]), join(EXT, "out", "cli")))
+      .toBe(cwdCopy);
+  });
+
+  it("falls back to the extension's own copy when cwd has none", () => {
+    const moduleCopy = join(EXT, "scripts", "probe_op.py");
+    expect(defaultProbeOpScript(FW, fakeFs([moduleCopy]), join(EXT, "out", "cli")))
+      .toBe(moduleCopy);
+  });
+
+  it("climbs from the module dir to the extension root", () => {
+    const moduleCopy = join(EXT, "scripts", "probe_op.py");
+    expect(defaultProbeOpScript(FW, fakeFs([moduleCopy]), join(EXT, "out", "cli", "nested")))
+      .toBe(moduleCopy);
+  });
+
+  it("keeps the cwd-relative fallback when neither root has the worker", () => {
+    expect(defaultProbeOpScript(FW, fakeFs([]), join(EXT, "out", "cli")))
+      .toBe(join(FW, "scripts", "probe_op.py"));
+  });
+
+  it("skips the module root when there is no module dir to search", () => {
+    const moduleCopy = join(EXT, "scripts", "probe_op.py");
+    expect(defaultProbeOpScript(FW, fakeFs([moduleCopy]), undefined))
+      .toBe(join(FW, "scripts", "probe_op.py"));
+  });
+
+  it("treats a throwing existence probe as absent and keeps climbing", () => {
+    const moduleCopy = join(EXT, "scripts", "probe_op.py");
+    const throwing = (p: string): boolean => {
+      if (p.startsWith(join(EXT, "out"))) {
+        throw new Error("EACCES");
+      }
+      return p === moduleCopy;
+    };
+    expect(defaultProbeOpScript(FW, throwing, join(EXT, "out", "cli")))
+      .toBe(moduleCopy);
+  });
+
+  it("bounds the climb instead of looping forever at the filesystem root", () => {
+    // Depth 0 and the root both miss, so the walk terminates on the parent
+    // check and the cwd fallback is returned.
+    expect(defaultProbeOpScript("/", fakeFs([]), "/"))
+      .toBe(join("/", "scripts", "probe_op.py"));
   });
 });

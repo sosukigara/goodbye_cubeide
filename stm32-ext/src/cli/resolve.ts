@@ -189,12 +189,12 @@ export type WorkerSpawn = (
   timeoutMs: number,
 ) => Promise<SpawnResult>;
 
-/** Locate scripts/probe_op.py by walking up from `fromDir` (default: cwd). */
-export function defaultProbeOpScript(
-  fromDir: string = process.cwd(),
-  exists: (p: string) => boolean = existsSync,
-): string {
-  let dir = fromDir;
+/** Walk up from `start` (max 6 levels) looking for scripts/probe_op.py. */
+function climbToProbeOpScript(
+  start: string,
+  exists: (p: string) => boolean,
+): string | undefined {
+  let dir = start;
   for (let i = 0; i < 6; i++) {
     const candidate = join(dir, "scripts", "probe_op.py");
     try {
@@ -209,6 +209,48 @@ export function defaultProbeOpScript(
       break;
     }
     dir = parent;
+  }
+  return undefined;
+}
+
+/**
+ * Directory of this compiled module (`out/cli`) when loaded as CJS.
+ *
+ * `typeof` on an absent binding is safe, so a bundled/ESM load skips this
+ * root instead of throwing.
+ */
+function compiledModuleDir(): string | undefined {
+  return typeof __dirname === "string" ? __dirname : undefined;
+}
+
+/**
+ * Locate scripts/probe_op.py.
+ *
+ * Two roots, in order: `fromDir` (default: cwd) and then this module's own
+ * directory. The cwd walk keeps an unpacked checkout or an explicit
+ * project-local worker authoritative, exactly as before. The module walk is
+ * what makes the installed extension usable: the sidecar ships inside the
+ * extension, so `node <ext>/out/cli/stm32.js ls` run from the user's
+ * firmware project used to look for `<firmware>/scripts/probe_op.py` and
+ * fail with "can't open file".
+ *
+ * The final fallback is still the cwd-relative path, so the existing error
+ * wording is unchanged when neither root has the sidecar.
+ */
+export function defaultProbeOpScript(
+  fromDir: string = process.cwd(),
+  exists: (p: string) => boolean = existsSync,
+  moduleDir: string | undefined = compiledModuleDir(),
+): string {
+  const fromCwd = climbToProbeOpScript(fromDir, exists);
+  if (fromCwd !== undefined) {
+    return fromCwd;
+  }
+  if (moduleDir !== undefined) {
+    const fromModule = climbToProbeOpScript(moduleDir, exists);
+    if (fromModule !== undefined) {
+      return fromModule;
+    }
   }
   return join(fromDir, "scripts", "probe_op.py");
 }

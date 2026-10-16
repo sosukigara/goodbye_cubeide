@@ -175,10 +175,10 @@ get sys.loop_min_us→ ok, 0x20000448, size 4
 要求 1000 ms に対し実測 1000/1002 ms。`robot.yaw` は catalog 側にしか無い
 シンボルで、B 修正前に `get` が拒否していたもの。コマンド全体 6.0 秒。
 
-### C. インストール版 CLI は cwd 依存 (未修正・新発見)
+### C. インストール版 CLI が cwd 依存で動かない — 修正済み
 
-`node <ext>/out/cli/stm32.js ls --elf <elf>` は、cwd が extension の
-インストール先 (またはその配下) でないと動かない:
+修正前は、cwd が extension のインストール先 (またはその配下) でないと
+worker を見つけられず、全 op が失敗していた:
 
 ```
 cwd = firmware プロジェクト
@@ -189,14 +189,30 @@ cwd = firmware プロジェクト
 
 原因は `src/cli/resolve.ts` の `defaultProbeOpScript()` が
 `process.cwd()` から最大 6 階層遡って `scripts/probe_op.py` を探し、
-見つからなければ `join(cwd, "scripts/probe_op.py")` を返すため。
+見つからなければ `join(cwd, "scripts/probe_op.py")` を返していたこと。
 worker の実体は extension 側 (`<ext>/scripts/probe_op.py`) にあり、
-`STM32_PROBE_OP` のような上書き用の環境変数も無い
-(`resolveCliPaths` が読むのは `XDG_DATA_HOME` / `STM32_ELF` / `STM32_TARGET` のみ)。
+上書き用の環境変数も無かった (`resolveCliPaths` が読むのは
+`XDG_DATA_HOME` / `STM32_ELF` / `STM32_TARGET` のみ)。
 
-本変更で導入した不具合ではなく以前からの挙動で、A/B とは独立。修正するなら
-`defaultProbeOpScript` の探索に「実行中スクリプト自身の位置
-(`<ext>/out/cli` → `<ext>/scripts`)」を候補として加えるのが最小。
+修正は探索根を 2 つにした。順序は cwd → モジュール自身のディレクトリで、
+cwd 優先は従来どおり (展開済みチェックアウトやプロジェクト固有の worker が
+引き続き勝つ)。モジュール側は `typeof __dirname` でガードしてあるので、
+CJS 以外のロード (バンドラ/ESM) ではこの根を飛ばすだけで例外にならない。
+探索の打ち切り (6 階層 / 親が自分自身) と、どちらの根にも無い場合の
+cwd 相対フォールバック (既存のエラー文言) は変えていない。
+
+修正後の実測 — cwd を firmware プロジェクト
+(`/home/so/robocon_ubuntu/NHK2026/nhk-2026-b-ros-android-controller/main`、
+`scripts/probe_op.py` を持たない) にして、インストール版 CLI を実行:
+
+```
+ls   → ok, count 4619, robot.yaw も sys.loop_min_us も含む
+poll sys.uptime_ms sys.loop_hz --count 3 --interval-ms 1000
+  tick 0 uptime 13990 ms
+  tick 1 uptime 14991 ms  delta=1001 ms
+  tick 2 uptime 15994 ms  delta=1003 ms
+  loop_hz: [1429, 1430, 1431]
+```
 
 ### 未対応 (本変更のスコープ外)
 
