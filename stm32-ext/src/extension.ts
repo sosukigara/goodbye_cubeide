@@ -1628,6 +1628,8 @@ export class LivePanelProvider {
    */
   private async writeFlow(name: string, value: string): Promise<void> {
     const stamp = new Date().toISOString();
+    // 書き込み時はプローブを強制的に奪取する。
+    await this.killForeignSession();
     // `name` and `ok` ride along with every result: the sidebar marks the row
     // that asked, and a refusal (six ways upstream of here) has to be
     // attributable to one row rather than to a single shared line.
