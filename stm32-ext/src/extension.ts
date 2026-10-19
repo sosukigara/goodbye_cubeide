@@ -668,6 +668,12 @@ export class LivePanelProvider {
     this.resolution = res;
     this.catalogRoots = roots;
     this.mcu = mcu;
+    // Registered variables are monitored automatically: when no watchlist has
+    // been saved yet, seed it with every resolved leaf so values are polled.
+    if (this.watchNames().length === 0 && Array.isArray(res.symbols)) {
+      const leaves = res.symbols.map((s) => s.name).filter((n) => typeof n === "string");
+      if (leaves.length > 0) void this.storage?.update(WATCHLIST_KEY, leaves);
+    }
     void this.storage?.update(LIVE_ELF_KEY, { elfPath: res.elf, mcu });
     const index: Record<string, LeafMeta> = Object.create(null);
     this.leafMeta = new Map();

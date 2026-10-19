@@ -78,7 +78,7 @@ const VAR_SCRIPT = `var __SEED = __VAR_SEED__;`
   + `const vscode = acquireVsCodeApi();`
   + `const q = (s) => document.querySelector(s);`
   + `const mk = (t) => document.createElement(t);`
-  + `const V = { types: new Map(), order: [], watched: Object.create(null), last: new Map(), query: '' };`
+  + `const V = { types: new Map(), order: [], watched: Object.create(null), last: new Map(), query: '', collapsed: Object.create(null) };`
   + `const tbody = q('[data-testid="var-rows"]');`
   + `const errBox = q('[data-testid="var-error"]');`
   + `const noteBox = q('[data-testid="var-note"]');`
@@ -263,9 +263,10 @@ const VAR_SCRIPT = `var __SEED = __VAR_SEED__;`
   + ` clearRows();`
   + ` const leafKeys = Array.from(V.types.keys()).filter((k) => !isNoise(k));`
   + ` rebuildGroupCounts(leafKeys);`
-  + ` for (let i = 0; i < V.order.length; i += 1) addRow(mkRow(V.order[i]));`
+  + ` function underCollapsed(name) { const ancs = npAncestorsOf(name); for (let c = 0; c < ancs.length; c += 1) if (V.collapsed[ancs[c]]) return true; return false; }`
+  + ` for (let i = 0; i < V.order.length; i += 1) { if (!underCollapsed(V.order[i])) addRow(mkRow(V.order[i])); }`
   + ` paintAll();`
-  + ` const rest = npCandidates(leafKeys).filter((n) => !V.watched[n]);`
+  + ` const rest = npCandidates(leafKeys).filter((n) => !V.watched[n] && !underCollapsed(n));`
   + ` appendRowsChunked(rest, 0, gen);`
   + `}`
   + `function appendRowsChunked(list, i, gen) {`
@@ -315,7 +316,7 @@ const VAR_SCRIPT = `var __SEED = __VAR_SEED__;`
   + ` tr.setAttribute('data-watched', V.watched[name] ? '1' : '0');`
   + ` const n = mk('td'); n.className = 'n'; n.textContent = name + ' (' + count + '件)';`
   + ` n.title = name + ' — クリックで配下に絞り込み表示';`
-  + ` n.addEventListener('click', () => { if (search) { search.value = name; } V.query = name; paintAll(); });`
+  + ` n.addEventListener('click', () => { V.collapsed[name] = !V.collapsed[name]; rebuild(); });`
   + ` const v = mk('td'); v.className = 'v'; v.textContent = count + '件';`
   + ` v.title = name + ' 配下の変数 (クリックで絞り込み)';`
   + ` const w = mk('td'); w.className = 'w';`
