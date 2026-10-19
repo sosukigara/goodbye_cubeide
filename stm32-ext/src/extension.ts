@@ -827,7 +827,9 @@ export class LivePanelProvider {
     if (lock === undefined) {
       return false;
     }
-    let alive = false;
+    if (lock.pid === process.pid) {
+      return false;
+    }
     try {
       process.kill(lock.pid, 0);
       alive = true;
