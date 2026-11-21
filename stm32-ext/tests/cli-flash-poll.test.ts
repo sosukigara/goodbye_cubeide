@@ -125,6 +125,25 @@ describe("stm32 flash", () => {
     expect(code).toBe(2);
     expect(cap.flashCalls).toHaveLength(0);
   });
+
+  it("a failed flash is exit 2, the documented refusal class, not 1", async () => {
+    // The documented set is 0 / 2 (usage, resolve, refusal) / 3 / 5 / 6. A
+    // verify failure used to return 1, which is outside it: an agent that
+    // branches on the set has no branch for "the flash ran and failed".
+    const { deps, cap } = harness({
+      flashRunner: async () => ({
+        ok: false,
+        command: "pyocd load --target stm32g474retx fw.elf",
+        message: "verify failed at 0x08000000",
+        details: [],
+      }),
+    });
+    const code = await main(["flash", STAGED_ELF, "--yes"], deps);
+    expect(code).toBe(2);
+    expect(json(cap)).toMatchObject({
+      ok: false, op: "flash", message: "verify failed at 0x08000000",
+    });
+  });
 });
 
 describe("stm32 poll", () => {

@@ -388,7 +388,10 @@ export async function main(argv: readonly string[], deps?: CliDeps | undefined):
         toStderr(`${line}\n`);
       }
       emit({ ok: result.ok, op: "flash", command: result.command, message: result.message, ...(result.dryRun === true ? { dryRun: true } : {}) });
-      return result.ok ? 0 : 1;
+      // 2, not 1: a failed flash is a refusal/operation failure like every other
+      // host-side failure here, and the documented exit-code set is
+      // 0 / 2 / 3 / 5 / 6. An agent branching on that set hit an undefined 1.
+      return result.ok ? 0 : 2;
     }
 
     case "poll": {
