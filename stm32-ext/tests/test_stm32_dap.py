@@ -186,3 +186,60 @@ def test_set_variable_rejects_garbage(adapter):
         "variablesReference": g["variablesReference"],
         "name": "sys", "value": "1"})
     assert group["success"] is False
+
+
+# ---------------------------------------------------------------------------
+# decoder / encoder units
+#
+# The adapter reads the resolution JSON that elf_resolve.py writes, which is
+# snake_case (`bit_size`), while the extension's webviews use camelCase
+# (`bitSize`). It also has to understand negative enumerators, because
+# -fshort-enums makes `MODE_STOP = -1` a single byte 0xff.
+# ---------------------------------------------------------------------------
+
+sys.path.insert(0, SCRIPTS)
+import stm32_dap  # noqa: E402
+
+MODE_META = {
+    "name": "drive.mode", "address": "0x20000010", "size": 1,
+    "kind": "enum", "signed": True, "type": "DriveMode",
+    "enumerators": [{"name": "MODE_IDLE", "value": 0},
+                    {"name": "MODE_FOLLOW", "value": 2},
+                    {"name": "MODE_STOP", "value": -1}],
+}
+
+
+def test_decode_names_a_negative_enumerator():
+    assert stm32_dap.decode_value(0xFF, MODE_META) == "MODE_STOP"
+    assert stm32_dap.decode_value(0xFE, MODE_META) == "-2 (unknown)"
+    assert stm32_dap.decode_value(0x02, MODE_META) == "MODE_FOLLOW"
+
+
+def test_set_value_encodes_a_negative_enumerator():
+    # "set by name" must produce two's complement; -1 used to be refused for
+    # not fitting in the one-byte member.
+    assert stm32_dap.parse_set_value("MODE_STOP", MODE_META, 1) == (255, "")
+
+
+def test_bitfields_read_both_key_spellings_and_sign_extend():
+    snake = {"name": "ctrl.wide", "address": "0x20000000", "size": 2,
+             "kind": "bitfield", "signed": True, "type": "int32_t",
+             "bit_size": 9, "bit_offset": 0}
+    camel = {"name": "ctrl.wide", "address": "0x20000000", "size": 2,
+             "kind": "bitfield", "signed": True, "type": "int32_t",
+             "bitSize": 9, "bitOffset": 0}
+    for meta in (snake, camel):
+        assert stm32_dap.decode_value(0x01FF, meta) == "-1", meta
+        assert stm32_dap.decode_value(0x00FF, meta) == "255", meta
+    assert stm32_dap.decode_value(0x01FF, dict(snake, signed=False)) == "511"
+    # A field that is not tagged bitfield but carries the width still works.
+    untagged = dict(camel, kind="scalar", signed=False)
+    assert stm32_dap.decode_value(0x01FF, untagged) == "511"
+
+
+def test_float_set_refuses_out_of_range_instead_of_raising():
+    meta = {"kind": "float", "size": 4, "signed": True, "type": "float"}
+    value, problem = stm32_dap.parse_set_value("1e40", meta, 4)
+    assert value is None and "float" in problem
+    assert stm32_dap.parse_set_value("nan", meta, 4)[0] is None
+    assert stm32_dap.parse_set_value("1.0", meta, 4) == (0x3F800000, "")

@@ -201,6 +201,23 @@ describe("P0-15 + D3: the type tree survives the host", () => {
     },
   });
 
+  it("skips null / primitive symbol entries instead of throwing", () => {
+    // A hand-edited or truncated --resolution JSON must read as "no symbol",
+    // the same way every other malformed shape does. A null entry used to
+    // throw "Cannot read properties of null (reading 'name')" out of the
+    // parser and surface as an unrelated build failure.
+    const res = parseElfResolutionJson(JSON.stringify({
+      base: "0x20000000", size: 16, end: "0x20000010",
+      symbols: [
+        null,
+        42,
+        "sys.loop_hz",
+        { name: "sys.ok", address: "0x20000000", offset: 0, size: 4, type: "uint32_t", kind: "scalar", signed: false },
+      ],
+    }));
+    expect(res.symbols.map((s) => s.name)).toEqual(["sys.ok"]);
+  });
+
   it("parseElfResolutionJson keeps kind, signed, enumerators and the tree", () => {
     const res = parseElfResolutionJson(resolverJson);
     expect(res.symbols.map((s) => s.kind)).toEqual(["scalar", "bool", "enum", "float", "scalar"]);
@@ -453,6 +470,35 @@ describe("P0-4 / D12: the write path carries the leaf width", () => {
     // "RUN\0" in little-endian memory is the integer 0x004e5552.
     expect(decodeValue("0x004e5552", { size: 4, kind: "string", signed: false, type: "char[4]", length: 4 }))
       .toBe("RUN");
+  });
+
+  it("names a negative enumerator instead of printing its unsigned bits", () => {
+    // ARM defaults to -fshort-enums: this enum is 1 byte and MODE_STOP is -1,
+    // so the sidecar logs 0xff. The resolver names the enumerator; the table
+    // printed "255 (unknown)" because it compared the raw BigInts.
+    const mode = {
+      size: 1, kind: "enum", signed: true, type: "DriveMode",
+      enumerators: [
+        { name: "MODE_IDLE", value: 0 },
+        { name: "MODE_FOLLOW", value: 2 },
+        { name: "MODE_STOP", value: -1 },
+      ],
+    };
+    expect(decodeValue("0xff", mode)).toBe("MODE_STOP");
+    // An unnamed negative value is printed signed, not as 254.
+    expect(decodeValue("0xfe", mode)).toBe("-2 (unknown)");
+    // Positive members are unaffected by the normalisation.
+    expect(decodeValue("0x02", mode)).toBe("MODE_FOLLOW");
+  });
+
+  it("sign-extends a signed bitfield at the field width", () => {
+    // "int32_t wide_bits : 9" holding -1 is 0x1ff. The graph panel printed -1
+    // and the table printed 511 for the same CSV row.
+    const wide = { size: 2, kind: "bitfield", signed: true, type: "int32_t", bitSize: 9, bitOffset: 0 };
+    expect(decodeValue("0x01ff", wide)).toBe("-1");
+    expect(decodeValue("0x00ff", wide)).toBe("255");
+    const unsignedWide = { ...wide, signed: false, type: "uint32_t" };
+    expect(decodeValue("0x01ff", unsignedWide)).toBe("511");
   });
 
   it("8-byte members stay exact (BigInt, not 32-bit bitwise)", () => {

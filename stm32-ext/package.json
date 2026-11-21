@@ -2,7 +2,7 @@
   "name": "stm32-ext",
   "displayName": "STM32 Extension (goodbye_cubeide)",
   "description": "Build, flash, and live-monitor generic STM32 projects from VSCode: Ninja+ccache builds, one-click CubeProgrammer flash with verify, up-to-200Hz live variables with graph + CSV. Native VSCode UI, 6 fixed panels.",
-  "version": "2.0.7",
+  "version": "2.0.8",
   "publisher": "goodbye-cubeide",
   "author": "so sukigara",
   "license": "MIT",
@@ -198,7 +198,7 @@
             "J-LINK"
           ],
           "default": "ST-LINK",
-          "description": "Debug probe type. Default ST-LINK (launch: stlink, swd_mode=true)."
+          "description": "記録用のプローブ種別。書き込み経路 (pyocd / CubeProgrammer) はどちらも接続中のプローブを自動選択するため、この値はコマンドラインに入りません。設定が空だと操作を止める検査の対象です。"
         },
         "stm32ext.interface": {
           "type": "string",
@@ -219,7 +219,7 @@
             "none"
           ],
           "default": "connect-under-reset",
-          "description": "Reset strategy. Default connect-under-reset (launch reset_strategy)."
+          "description": "pyOCD 経路のリセット戦略。connect-under-reset は --connect under-reset、none は --no-reset になります。CubeProgrammer 経路は常に -rst で、この設定は効きません。"
         },
         "stm32ext.pollHz": {
           "type": "number",

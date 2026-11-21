@@ -133,8 +133,9 @@ function parseEnumerators(v: unknown): readonly Enumerator[] | undefined {
   return out.length > 0 ? out : undefined;
 }
 
+/** A finite, non-negative number from JSON; anything else is "absent". */
 function num(v: unknown): number | undefined {
-  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : undefined;
 }
 
 /** Optional DWARF extras shared by symbols and tree nodes. */
@@ -221,6 +222,12 @@ export function parseElfResolutionJson(stdout: string): ElfResolution {
   const symbols: ResolvedSymbol[] = [];
   if (Array.isArray(r["symbols"])) {
     for (const s of r["symbols"]) {
+      // A null/primitive entry (hand-edited or truncated --resolution JSON)
+      // used to throw "Cannot read properties of null" out of the parser;
+      // every other malformed shape is skipped, so this one is too.
+      if (typeof s !== "object" || s === null) {
+        continue;
+      }
       const o = s as Record<string, unknown>;
       if (typeof o["name"] !== "string" || typeof o["address"] !== "string"
         || typeof o["offset"] !== "number") {

@@ -984,6 +984,37 @@ describe("graph panel type awareness", () => {
     // a step line leaves horizontal runs; a plain polyline of 0,1,2 does not
     expect(lanePts.some((q, i) => i > 0 && q.y === lanePts[i - 1]?.y)).toBe(true);
   });
+
+  it("names a negative enumerator instead of its unsigned bits", () => {
+    // -fshort-enums: the enum is 1 byte and MODE_STOP is -1, so the sidecar
+    // logs 0xff. The readout used to say "255 (unknown)" for it.
+    const p = boot(["drive.mode"]);
+    p.post({
+      kind: "live-types",
+      tree: { name: "debug" },
+      index: {
+        "drive.mode": LEAF({
+          size: 1,
+          kind: "enum",
+          signed: true,
+          enumerators: [
+            { name: "MODE_IDLE", value: 0 },
+            { name: "MODE_FOLLOW", value: 2 },
+            { name: "MODE_STOP", value: -1 },
+          ],
+        }),
+      },
+    });
+    p.post({ kind: "live-sample", samples: [sample("drive.mode", 255, 0, 1)] });
+    p.flush();
+    const row = p.seriesRows().find((r) => r.name === "drive.mode");
+    expect(row?.cells[3]).toBe("MODE_STOP");
+    // An unnamed negative value is signed, not 254.
+    p.post({ kind: "live-sample", samples: [sample("drive.mode", 254, 10, 1)] });
+    p.flush();
+    const next = p.seriesRows().find((r) => r.name === "drive.mode");
+    expect(next?.cells[3]).toBe("-2 (unknown)");
+  });
 });
 
 describe("graph panel controls", () => {

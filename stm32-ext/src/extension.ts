@@ -2965,6 +2965,14 @@ export function activate(context: vscode.ExtensionContext): void {
   const buildDiags = vscode.languages.createDiagnosticCollection("stm32ext-build");
   context.subscriptions.push(buildDiags);
   const scriptsDir = join(context.extensionPath, "scripts");
+  // Register the setup venv BEFORE anything probes a tool or spawns a sidecar.
+  // setVenvDir used to run only at the end of runSetup, so on every launch:
+  //  - resolveTool could not see the venv, "pyocd missing" was reported for a
+  //    pyocd the extension had installed, and
+  //  - the pyelftools import probe ran on the SYSTEM python, decided it was
+  //    missing, and re-ran pip — a network round trip on every window reload.
+  // The venv path is known here, so the first probe is already the right one.
+  setVenvDir(join(context.globalStorageUri.fsPath, "venv"));
   livePanel.configure(scriptsDir, context.workspaceState);
   void restoreLiveAfterReload(channel, livePanel, scriptsDir, context.workspaceState);
   // Single Live->Graph forwarding subscription (todo2): every sample batch

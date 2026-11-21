@@ -224,7 +224,12 @@ export function renderNinja(args: RenderArgs): string {
   const cxxFlags =
     `${cxxStdFlag(dbg.cppStandard)} ${debugFlag} ${defines} -c ${incFlags} ${opt.flag} ` +
     `-ffunction-sections -fdata-sections -fno-rtti -fno-use-cxa-atexit -Wall ${ANALYSIS_FLAGS} --specs=nano.specs ${mcuFlags}`;
-  const asmFlags = `${debugFlag} ${asmDefines} -c -x assembler-with-cpp --specs=nano.specs ${mcuFlags}`;
+  // -I matters here: the assembler runs through the C preprocessor
+  // (`-x assembler-with-cpp`), so a startup or vector file that includes a
+  // device header needs the same include path as a C file. CubeIDE's template
+  // passes $(AS_INCLUDES) for exactly this reason; leaving it out built the
+  // stock startup file and broke any .s that #includes anything.
+  const asmFlags = `${debugFlag} ${asmDefines} -c ${incFlags} -x assembler-with-cpp --specs=nano.specs ${mcuFlags}`;
   const ldFlags =
     `${mcuFlags} -T${shellQuote(linkerAbs)} --specs=nosys.specs -Wl,-Map=${shellQuote(map)} ` +
     `-Wl,--gc-sections -static ${otherLd} --specs=nano.specs -Wl,--start-group -lc -lm -lstdc++ -lsupc++ -Wl,--end-group`;

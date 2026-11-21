@@ -114,6 +114,22 @@ describe("the encoder refuses rather than guessing", () => {
     }
   });
 
+  it("writes a negative enumerator by name as two's complement", () => {
+    // "MODE_STOP" used to be refused: the encoder treated the enumerator's
+    // value as an unsigned number and -1 does not fit a 1-byte member.
+    const mode1: LeafMeta = {
+      size: 1, kind: "enum", signed: true, type: "DriveMode",
+      enumerators: [
+        { name: "MODE_IDLE", value: 0 },
+        { name: "MODE_FOLLOW", value: 2 },
+        { name: "MODE_STOP", value: -1 },
+      ],
+    };
+    expect(encodeWriteValue("MODE_STOP", mode1, 1)).toEqual({ ok: true, bits: "255" });
+    // Write -> display is a round trip: the same 0xff reads back as the name.
+    expect(decodeValue("0xff", mode1)).toBe("MODE_STOP");
+  });
+
   it("refuses a bitfield, because writing it would clobber its neighbours", () => {
     const out = encodeWriteValue("1", bits1, 4);
     expect(out.ok).toBe(false);

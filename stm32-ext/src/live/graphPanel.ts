@@ -195,9 +195,15 @@ const GRAPH_SCRIPT = `var __SEED = __GRAPH_SEED__;`
   + `  return { plottable: true, v: f, label: f.toPrecision(6) }; }`
   + ` if (kind === 'enum') {`
   + `  const en = (meta && Array.isArray(meta.enumerators)) ? meta.enumerators : [];`
+  // Negative enumerators (MODE_STOP = -1) arrive as two's-complement bits, so
+  // the comparison happens at the member's unsigned width; the unnamed
+  // fallback is printed signed like the type.
+  + `  const eb = size * 8;`
+  + `  const want = BigInt.asUintN(eb, big);`
   + `  for (let i = 0; i < en.length; i += 1) {`
-  + `   if (BigInt(en[i].value) === big) return { plottable: false, v: i, label: String(en[i].name) }; }`
-  + `  return { plottable: false, v: -1, label: big.toString(10) + ' (unknown)' }; }`
+  + `   if (BigInt.asUintN(eb, BigInt(en[i].value)) === want) return { plottable: false, v: i, label: String(en[i].name) }; }`
+  + `  const shown = (meta && meta.signed) ? BigInt.asIntN(eb, want) : want;`
+  + `  return { plottable: false, v: -1, label: shown.toString(10) + ' (unknown)' }; }`
   + ` if (kind !== 'scalar' || !meta) return { plottable: false, v: 0, label: str + ' 型不明' };`
   + ` if (meta.signed) { const sv = BigInt.asIntN(size * 8, big); return { plottable: true, v: Number(sv), label: sv.toString(10) }; }`
   + ` return { plottable: true, v: Number(big), label: big.toString(10) };`

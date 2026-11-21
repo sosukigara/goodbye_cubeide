@@ -141,6 +141,9 @@ describe("ninjaGen verbatim flags", () => {
     expect(asmRule).toBeDefined();
     expect(asmRule).toContain("-DDEBUG");
     expect(asmRule).not.toContain("-DUSE_HAL_DRIVER");
+    // The assembler runs through cpp, so it needs the same include path as C:
+    // without -I a .s that #includes a device header cannot be preprocessed.
+    expect(asmRule).toContain("-I");
   });
   it("link rule mirrors Debug/makefile (Map, static, start-group libs)", () => {
     const ninja = renderNinja(renderArgs());

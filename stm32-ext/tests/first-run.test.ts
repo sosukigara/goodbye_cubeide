@@ -1,6 +1,9 @@
 // First-run usability: a person who has never seen this extension must be told
 // what to install, in one message, before they press Build and meet
 // "executable file not found".
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import {
   firstRunMessage,
@@ -35,6 +38,26 @@ vi.mock("vscode", () => ({
 }));
 // The wording is the product here, so it is asserted directly rather than
 // snapshotted: an unhelpful summary is exactly the failure this guards.
+
+describe("activation order", () => {
+  it("registers the setup venv before the first tool probe", () => {
+    // The bug this guards: setVenvDir ran only at the END of runSetup, so at
+    // every activation the tool probe saw the SYSTEM python. pyelftools was
+    // then "missing" even right after a successful install, pip ran again on
+    // every window reload, and the venv's own pyocd/ninja were invisible.
+    const src = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), "..", "src", "extension.ts"),
+      "utf8",
+    );
+    const activateAt = src.indexOf("export function activate");
+    const setAt = src.indexOf(
+      'setVenvDir(join(context.globalStorageUri.fsPath, "venv"))', activateAt);
+    const probeAt = src.indexOf("describeMissingTools(TOOL_REQUIREMENTS", activateAt);
+    expect(activateAt).toBeGreaterThanOrEqual(0);
+    expect(setAt).toBeGreaterThan(activateAt);
+    expect(probeAt).toBeGreaterThan(setAt);
+  });
+});
 
 describe("first-run toolchain preflight", () => {
   it("says nothing is missing when everything is installed", () => {

@@ -118,9 +118,15 @@ const VAR_SCRIPT = `var __SEED = __VAR_SEED__;`
   + `  return { label: f.toPrecision(6), note: note }; }`
   + ` if (kind === 'enum') {`
   + `  const en = (meta && Array.isArray(meta.enumerators)) ? meta.enumerators : [];`
+  // Enumerators can be negative (MODE_STOP = -1) while the CSV carries the
+  // member's two's-complement bits, so both sides are compared at the member's
+  // unsigned width. The unnamed fallback is printed signed like the type.
+  + `  const bits = size * 8;`
+  + `  const want = BigInt.asUintN(bits, big);`
   + `  for (let i = 0; i < en.length; i += 1) {`
-  + `   if (BigInt(en[i].value) === big) return { label: String(en[i].name), note: note }; }`
-  + `  return { label: big.toString(10) + ' (unknown)', note: note }; }`
+  + `   if (BigInt.asUintN(bits, BigInt(en[i].value)) === want) return { label: String(en[i].name), note: note }; }`
+  + `  const shown = (meta && meta.signed) ? BigInt.asIntN(bits, want) : want;`
+  + `  return { label: shown.toString(10) + ' (unknown)', note: note }; }`
   + ` if (!meta) return { label: str + ' 型不明', note: note };`
   + ` if (meta.signed) { const sv = BigInt.asIntN(size * 8, big); return { label: sv.toString(10), note: note }; }`
   + ` return { label: big.toString(10), note: note };`

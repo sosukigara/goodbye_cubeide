@@ -23,6 +23,7 @@ Usage:
 """
 
 import json
+import math
 import os
 import struct
 import subprocess
@@ -74,23 +75,67 @@ def write_message(stream, payload):
     stream.flush()
 
 
+def _meta_int(meta, *keys, default=None):
+    """First present, integer-valued key among `keys`.
+
+    Both spellings are accepted on purpose: the resolution JSON that
+    elf_resolve.py writes is snake_case (`bit_size`), while the extension's
+    live-types index and the graph panel use camelCase (`bitSize`). This
+    adapter used to read ONLY camelCase from the snake_case document, so
+    `bit_size` was always absent and every bitfield in the Run & Debug view
+    showed the whole covering word instead of the field.
+    """
+    for key in keys:
+        v = meta.get(key)
+        if isinstance(v, bool):
+            continue
+        if isinstance(v, int):
+            return v
+        if isinstance(v, str):
+            try:
+                return int(v, 0)
+            except ValueError:
+                continue
+    return default
+
+
 def decode_value(raw, meta):
     """Raw integer + leaf meta -> display string (host decoder conventions)."""
     size = int(meta.get("size", 4) or 4)
     kind = str(meta.get("kind", "scalar") or "scalar")
+    bits = size * 8
+    mask = (1 << bits) - 1
+    raw &= mask
+    bit_width = _meta_int(meta, "bitSize", "bit_size", default=0)
+    # Bitfield first, like the graph panel: a 1-bit field inside a word must not
+    # be read as the whole word, whatever DWARF base type it was declared with.
+    if kind == "bitfield" or bit_width > 0:
+        width = bit_width if bit_width > 0 else bits
+        at = _meta_int(meta, "bitOffset", "bit_offset", default=0)
+        field = (raw >> at) & ((1 << width) - 1)
+        if bool(meta.get("signed", False)) and field >= (1 << (width - 1)):
+            field -= 1 << width
+        return str(field)
     if kind == "bool":
         return "true" if raw != 0 else "false"
     if kind == "enum":
+        # Enumerators may be negative (MODE_STOP = -1) while `raw` holds the
+        # member's two's-complement bits: compare at the member's width.
         for e in meta.get("enumerators", []) or []:
-            if int(e.get("value", -1)) == raw:
+            if (int(e.get("value", 0)) & mask) == raw:
                 return str(e.get("name"))
-        return f"{raw} (unknown)"
+        shown = raw
+        if bool(meta.get("signed", False)) and raw >= (1 << (bits - 1)):
+            shown = raw - (1 << bits)
+        return f"{shown} (unknown)"
     if kind == "float":
+        if size not in (4, 8):
+            return f"0x{raw:x} (型不明)"
         try:
             if size == 8:
-                (f,) = struct.unpack("<d", struct.pack("<Q", raw & 0xFFFFFFFFFFFFFFFF))
+                (f,) = struct.unpack("<d", struct.pack("<Q", raw))
             else:
-                (f,) = struct.unpack("<f", struct.pack("<I", raw & 0xFFFFFFFF))
+                (f,) = struct.unpack("<f", struct.pack("<I", raw))
         except struct.error:
             return f"0x{raw:x} (型不明)"
         return f"{f:.6g}"
@@ -98,13 +143,9 @@ def decode_value(raw, meta):
         data = raw.to_bytes(size, "little", signed=False)
         text = data.split(b"\x00", 1)[0].decode("utf-8", errors="replace")
         return text if text != "" else "(空)"
-    if kind == "bitfield":
-        width = int(meta.get("bitSize", size * 8) or size * 8)
-        at = int(meta.get("bitOffset", 0) or 0)
-        return str((raw >> at) & ((1 << width) - 1))
     if kind == "scalar" and bool(meta.get("signed", False)):
-        bits = size * 8
-        raw -= (1 << bits) if raw >= (1 << (bits - 1)) else 0
+        if raw >= (1 << (bits - 1)):
+            raw -= 1 << bits
         return str(raw)
     if kind == "scalar":
         return str(raw)
@@ -126,13 +167,23 @@ def parse_set_value(text, meta, size):
     if kind == "enum":
         for e in meta.get("enumerators", []) or []:
             if str(e.get("name")) == raw:
-                return int(e.get("value", 0)), ""
+                # A negative enumerator is stored two's complement; the
+                # encoder used to hand back -1 and then refuse it for not
+                # fitting, so MODE_STOP could never be set from the UI.
+                return int(e.get("value", 0)) & (limit - 1), ""
     if kind == "float":
         try:
             f = float(raw)
         except ValueError:
             return None, f"not a number: {raw!r}"
-        packed = struct.pack("<d", f) if size == 8 else struct.pack("<f", f)
+        if not math.isfinite(f):
+            return None, f"finite float required, got {raw!r}"
+        try:
+            packed = struct.pack("<d", f) if size == 8 else struct.pack("<f", f)
+        except (struct.error, OverflowError):
+            # struct.pack raises OverflowError past the float32 range; letting
+            # it escape turned a typo into a protocol error.
+            return None, f"{raw!r} does not fit a {size}-byte float"
         return int.from_bytes(packed, "little"), ""
     try:
         v = int(raw, 0)

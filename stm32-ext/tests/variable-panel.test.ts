@@ -450,6 +450,27 @@ describe("variable panel live values", () => {
     expect(p.valueOf("constructor")).toBe("3752");
   });
 
+  it("shows a negative enumerator by name, not as its unsigned bits", () => {
+    // 1-byte signed enum (-fshort-enums): MODE_STOP = -1 arrives as 0xff.
+    const p = boot();
+    p.post(types({
+      "drive.mode": LEAF({
+        size: 1, kind: "enum", signed: true, type: "DriveMode",
+        enumerators: [
+          { name: "MODE_IDLE", value: 0 },
+          { name: "MODE_FOLLOW", value: 2 },
+          { name: "MODE_STOP", value: -1 },
+        ],
+      }),
+    }));
+    p.post({ kind: "live-watchlist", names: ["drive.mode"] });
+    p.post({ kind: "live-sample", samples: [sample("drive.mode", "0xff", 0)] });
+    expect(p.valueOf("drive.mode")).toBe("MODE_STOP");
+    // An unnamed negative value is printed signed, not as 254.
+    p.post({ kind: "live-sample", samples: [sample("drive.mode", "0xfe", 10)] });
+    expect(p.valueOf("drive.mode")).toBe("-2 (unknown)");
+  });
+
   it("keeps the last known value when a batch carries no sample for the row", () => {
     const p = boot();
     p.post(types({ "sys.loop_hz": LEAF(), "sys.uptime": LEAF() }));

@@ -158,13 +158,31 @@ export function decodeValue(hex: string, meta: LeafMeta | undefined): string {
       return Number.isFinite(n) ? n.toPrecision(6) : String(hex);
     }
     case "enum": {
-      const hit = (meta.enumerators ?? []).find((e) => BigInt(e.value) === v);
-      return hit === undefined ? `${v} (unknown)` : hit.name;
+      // DWARF enumerators can be negative (`MODE_STOP = -1`), while the CSV
+      // carries the member's two's-complement bits (`0xff` for a 1-byte enum,
+      // because ARM defaults to -fshort-enums). Comparing the raw BigInts
+      // reported 255 (unknown) for an enumerator the resolver had just named.
+      // Both sides are normalised to the member's unsigned width.
+      const bits = meta.size > 0 ? meta.size * 8 : digits.length * 4;
+      const hit = (meta.enumerators ?? []).find(
+        (e) => BigInt.asUintN(bits, BigInt(e.value)) === v,
+      );
+      if (hit !== undefined) {
+        return hit.name;
+      }
+      // An unnamed value is shown the way the type would be printed: signed
+      // when the enum's underlying type is signed.
+      const shown = meta.signed ? BigInt.asIntN(bits, v) : v;
+      return `${shown} (unknown)`;
     }
     case "bitfield": {
       const width = BigInt(meta.bitSize ?? digits.length * 4);
       const at = BigInt(meta.bitOffset ?? 0);
-      return ((v >> at) & ((1n << width) - 1n)).toString(10);
+      const raw = (v >> at) & ((1n << width) - 1n);
+      // `int32_t x:9` holding -1 reads back as 511 unless it is sign-extended
+      // at the FIELD width. The graph panel did this and the table did not, so
+      // the same bitfield read -1 on one surface and 511 on the other.
+      return (meta.signed ? BigInt.asIntN(Number(width), raw) : raw).toString(10);
     }
     case "scalar":
       return (meta.signed ? BigInt.asIntN(digits.length * 4, v) : v).toString(10);
@@ -252,7 +270,12 @@ export function encodeWriteValue(
     case "enum": {
       const hit = (meta.enumerators ?? []).find((e) => e.name === raw);
       if (hit !== undefined) {
-        return asUnsigned(BigInt(hit.value), `列挙子 ${raw}`);
+        // A negative enumerator is stored two's complement; `asUnsigned` then
+        // only has to prove it fits the member's width.
+        return asUnsigned(
+          BigInt.asUintN(width * 8, BigInt(hit.value)),
+          `列挙子 ${raw}`,
+        );
       }
       if (!/^[+-]?\d+$/.test(raw)) {
         const names = (meta.enumerators ?? []).map((e) => e.name).join(", ");

@@ -133,8 +133,8 @@ webview の HTML は起動時に 1 度だけ設定され、以降はメッセー
 - `stm32ext.flashTool`:
   - `pyocd`（既定）: `pyocd load --target <mcu> --format elf --connect <mode> <elf>`。検証とリセットは pyOCD の既定動作です。追加のベンダーツールチェインは不要です。
   - `cubeprogr`: `STM32_Programmer_CLI -c port=<interface> -w <elf> -v -rst`（`-v` は常に付与）。
-- `stm32ext.interface` と `stm32ext.probe` は CubeProgrammer 経路にのみ効きます。pyOCD 経路は接続する ST-LINK を自分で選び、インターフェースは probe から導出されます。
-- `stm32ext.resetMode=connect-under-reset` は pyOCD では `--connect under-reset`、`none` は `--no-reset` になります。
+- `stm32ext.interface` は CubeProgrammer 経路の `-c port=SWD` / `port=JTAG` になります。**プローブの選択はどちらの経路も自動**です（pyOCD は接続中の ST-LINK を自分で選び、CubeProgrammer も接続中のプローブを自動認識します）。`stm32ext.probe` は**記録用**で、コマンドラインには現れません。
+- `stm32ext.resetMode` が効くのは **pyOCD 経路だけ**です: `connect-under-reset` → `--connect under-reset`、`none` → `--no-reset`。CubeProgrammer 経路は常に `-c port=<iface> -w <elf> -v -rst` で、リセット方法は CubeProgrammer の既定に従います。
 - 書き込み前にプローブ競合（CubeIDE 起動中、別の監視セッションがロックファイル `/tmp/stm32ext-live.lock` を保持）を検査し、 modal で確認します。失敗したときの「再試行」はビルドからやり直します。
 - 書き込みが成功して停止していた監視セッションがあれば自動で再開します。
 
@@ -170,7 +170,7 @@ webview の HTML は起動時に 1 度だけ設定され、以降はメッセー
 ### デバッグ（F5・標準UI）
 - 「実行とデバッグ」から `STM32 Attach` で接続すると、標準の変数・ウォッチ・ホバーでファームウェアのグローバル変数を参照できます（実装: `scripts/stm32_dap.py`、pyOCD経由・無停止リード）。
 - `launch.json` は空で構いません — ELF とターゲットは `stm32ext.*` 設定と直前のビルド成果物から自動補完されます（設定の一本化）。
-- `Globals` スコープに構造体ツリーを階層表示します。変数の書込は確認ダイアログなしで即時反映され、出力チャネルに `[dap-write]` の監査行が残ります。
+- `Globals` スコープに構造体ツリーを階層表示します。変数の書込は確認ダイアログなしで即時反映され、**デバッグコンソール**（アダプタの stderr）に `[dap-write]` の監査行が残ります。
 - 停止（pause）・再開（continue）のみ対応し、ブレークポイント／ステップ実行はありません。実行中の連続監視・グラフは従来の Live 側が担当します（併存）。
 
 ## 設定
@@ -181,9 +181,9 @@ webview の HTML は起動時に 1 度だけ設定され、以降はメッセー
 |---|---|---|---|
 | `stm32ext.flashTool` | `pyocd` / `cubeprogr` | `pyocd` | 書き込みツール。`pyocd` は live と同じライブラリ、追加インストール不要 |
 | `stm32ext.cliPath` | string | `STM32_Programmer_CLI` | CubeProgrammer CLI のパス。`flashTool=cubeprogr` のときだけ参照 |
-| `stm32ext.probe` | `ST-LINK` / `J-LINK` | `ST-LINK` | プローブ種別（pyOCD 経路では未使用） |
+| `stm32ext.probe` | `ST-LINK` / `J-LINK` | `ST-LINK` | プローブ種別の**記録用**。どちらの書き込み経路もプローブは自動選択するので、コマンドには入りません |
 | `stm32ext.interface` | `SWD` / `JTAG` | `SWD` | デバッグインターフェース（CubeProgrammer 経路の `port=` になる） |
-| `stm32ext.resetMode` | `connect-under-reset` / `software-reset` / `hardware-reset` / `core-reset` / `none` | `connect-under-reset` | リセット戦略。pyOCD では `connect-under-reset` → `--connect under-reset`、`none` → `--no-reset` |
+| `stm32ext.resetMode` | `connect-under-reset` / `software-reset` / `hardware-reset` / `core-reset` / `none` | `connect-under-reset` | **pyOCD 経路の**リセット戦略（`-rst` 系のマッピングは上記）。CubeProgrammer 経路は `-rst` 固定 |
 | `stm32ext.pollHz` | number, 1–200 | `100` | Live のポーリング周波数 |
 | `stm32ext.uiFontPx` | number, 12–16 | `15` | サイドバーの基本文字サイズ(px)。操作ボタンのタップ領域と値列/操作列の幅はこれに追従します。上限の 16px は、300px のサイドバーで変数名の意味のある部分が読める限界です（実測で名前列は約 11 文字。20px では 5 文字しか入らず `req…` になります）。変更後は `Developer: Reload Window`（または再起動）が必要です |
 | `stm32ext.autoSetup` | boolean | `true` | 起動時に不足ツールを自動導入します。拡張ストレージ内に専用 venv を作り `ninja` / `pyocd` / `pyelftools` を pip で入れます。`arm-none-eabi-gcc` と `python3` は自動導入の対象外です。`false` にすると導入せず不足の通知だけが出ます |
