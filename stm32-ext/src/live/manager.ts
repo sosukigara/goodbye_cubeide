@@ -8,6 +8,14 @@ import type { LiveSample } from "./poller";
 
 export const WATCHLIST_KEY = "stm32ext.liveWatch";
 
+/**
+ * Whether the watchlist has ever been decided (auto-seeded by the first
+ * resolution, or edited by the user). "The list is empty" alone cannot say
+ * that: an explicit removal of the last variable leaves an empty list, and
+ * re-seeding it on the next build would undo the user's action.
+ */
+export const WATCHLIST_INIT_KEY = "stm32ext.liveWatchInit";
+
 /** Last successfully built ELF + MCU, so a window reload can re-resolve. */
 export const LIVE_ELF_KEY = "stm32ext.liveElf";
 
@@ -18,12 +26,23 @@ export interface SessionLock {
   readonly started: string;
 }
 
+/**
+ * A pid the kernel would accept as "one process". Anything else — 0 and
+ * negatives are *process groups*, non-integers, NaN, absurd magnitudes — must
+ * never reach `process.kill`: `kill(0, "SIGTERM")` signals this extension
+ * host's own process group, so one corrupt lock file would take VSCode down.
+ */
+export function isUsablePid(pid: unknown): pid is number {
+  return typeof pid === "number" && Number.isSafeInteger(pid) && pid > 0;
+}
+
 export function readSessionLock(text: string): SessionLock | undefined {
   try {
     const o = JSON.parse(text) as Record<string, unknown>;
-    if (typeof o["pid"] === "number" && typeof o["project"] === "string") {
+    const pid = o["pid"];
+    if (isUsablePid(pid) && typeof o["project"] === "string") {
       return {
-        pid: o["pid"],
+        pid,
         project: o["project"],
         started: typeof o["started"] === "string" ? o["started"] : "",
       };
@@ -36,6 +55,46 @@ export function readSessionLock(text: string): SessionLock | undefined {
 
 export function writeSessionLock(lock: SessionLock): string {
   return JSON.stringify(lock);
+}
+
+/**
+ * Signal-0 liveness probe. Signal 0 is delivered to nobody: success means the
+ * pid exists, ESRCH means it does not, EPERM means it exists but is another
+ * user's (still alive for our purposes).
+ */
+export function isPidAlive(pid: number): boolean {
+  if (!isUsablePid(pid)) {
+    return false;
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as { code?: unknown } | undefined)?.code !== "ESRCH";
+  }
+}
+
+/**
+ * Is this lock a *different, still-running* session?
+ *
+ * The lock records the sidecar's pid, not the extension host's, so "our own
+ * session" is `childPid`. Comparing only against the host pid (as the old
+ * force-take path did) classified every own session as foreign and SIGTERMed
+ * it on the next variable write. `hostPid` stays in the comparison so a lock
+ * written by a path that recorded the host is still recognised as ours.
+ */
+export function isForeignSessionLock(
+  lock: SessionLock | undefined,
+  own: { readonly childPid?: number | undefined; readonly hostPid?: number | undefined },
+  alive: (pid: number) => boolean = isPidAlive,
+): boolean {
+  if (lock === undefined) {
+    return false;
+  }
+  if (lock.pid === own.childPid || lock.pid === own.hostPid) {
+    return false;
+  }
+  return alive(lock.pid);
 }
 
 export { PROBE_BUSY_MESSAGE, isProbeBusyOutput } from "../probe/conflict.js";

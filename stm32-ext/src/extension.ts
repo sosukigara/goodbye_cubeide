@@ -56,6 +56,7 @@ import {
 import {
   PROBE_BUSY_MESSAGE,
   WATCHLIST_KEY,
+  WATCHLIST_INIT_KEY,
   LIVE_ELF_KEY,
   buildResolutionJson,
   DEFAULT_EXTRA_SIZE,
@@ -65,6 +66,8 @@ import {
   extraArgs,
   filterWatchedSymbols,
   hasWindow,
+  isForeignSessionLock,
+  isPidAlive,
   isProbeBusyOutput,
   parseNmSymbol,
   parseNmSymbolSize,
@@ -167,7 +170,15 @@ export function readSettings(): { ok: true; value: Stm32Settings } | { ok: false
  */
 export async function checkProbeConflict(
   channel: vscode.OutputChannel,
-  opts?: { silent?: boolean },
+  opts?: {
+    readonly silent?: boolean;
+    /**
+     * This window's own sidecar pid. Flash stops its own session anyway, so
+     * reporting it as "another session holds the probe" is a false conflict
+     * that trains the user to click through the modal.
+     */
+    readonly ownPid?: number | undefined;
+  },
 ): Promise<boolean> {
   let ps = "";
   try {
@@ -193,15 +204,8 @@ export async function checkProbeConflict(
   try {
     const raw = readFileSync(join(tmpdir(), "stm32ext-live.lock"), "utf8");
     const lock = readSessionLock(raw);
-    if (lock !== undefined) {
-      let alive = false;
-      try {
-        process.kill(lock.pid, 0);
-        alive = true;
-      } catch {
-        alive = false;
-      }
-      if (alive) {
+    if (lock !== undefined && lock.pid !== opts?.ownPid) {
+      if (isPidAlive(lock.pid)) {
         channel.appendLine(`[probe] CONFLICT: live session holds probe (${lock.project}, pid=${lock.pid})`);
         issues.push(`監視セッションがプローブ使用中 (${lock.project}) — サイドバーの⏹ 停止で解放`);
       }
@@ -668,11 +672,21 @@ export class LivePanelProvider {
     this.resolution = res;
     this.catalogRoots = roots;
     this.mcu = mcu;
-    // Registered variables are monitored automatically: when no watchlist has
-    // been saved yet, seed it with every resolved leaf so values are polled.
-    if (this.watchNames().length === 0 && Array.isArray(res.symbols)) {
+    // Registered variables are monitored automatically: the first resolution
+    // seeds every resolved leaf so values appear without clicking anything.
+    // The seed is keyed on its own flag, not on "the list is empty": after the
+    // user removes the last variable, the empty list has to stay empty across
+    // the next build instead of refilling itself with everything.
+    if (
+      this.storage?.get<unknown>(WATCHLIST_INIT_KEY) !== true
+      && this.watchNames().length === 0
+      && Array.isArray(res.symbols)
+    ) {
       const leaves = res.symbols.map((s) => s.name).filter((n) => typeof n === "string");
-      if (leaves.length > 0) void this.storage?.update(WATCHLIST_KEY, leaves);
+      if (leaves.length > 0) {
+        void this.storage?.update(WATCHLIST_KEY, leaves);
+        void this.storage?.update(WATCHLIST_INIT_KEY, true);
+      }
     }
     void this.storage?.update(LIVE_ELF_KEY, { elfPath: res.elf, mcu });
     const index: Record<string, LeafMeta> = Object.create(null);
@@ -817,31 +831,16 @@ export class LivePanelProvider {
    * non-extension processes: only the exact pid recorded in our lock file.
    */
   private async killForeignSession(): Promise<boolean> {
-    let raw: string;
-    try {
-      raw = readFileSync(this.lockPath(), "utf8");
-    } catch {
-      return false;
-    }
-    const lock = readSessionLock(raw);
+    const lock = this.ownLockFile();
     if (lock === undefined) {
       return false;
     }
-    if (lock.pid === process.pid) {
-      return false;
-    }
-    let alive = false;
-    try {
-      process.kill(lock.pid, 0);
-      alive = true;
-    } catch {
-      alive = false;
-    }
-    if (!alive) {
-      try {
-        unlinkSync(this.lockPath());
-      } catch {
-        /* best-effort */
+    // Our own sidecar is the normal case while Live is running; "force-take"
+    // must never classify it as foreign. A dead owner leaves only a stale
+    // file: reclaim it here so the next claim does not have to.
+    if (!isForeignSessionLock(lock, { childPid: this.childPid, hostPid: process.pid })) {
+      if (lock.pid !== this.childPid && lock.pid !== process.pid && !isPidAlive(lock.pid)) {
+        this.removeLockFile();
       }
       return false;
     }
@@ -861,12 +860,54 @@ export class LivePanelProvider {
       this.slog(`cannot signal pid=${lock.pid}: ${err instanceof Error ? err.message : String(err)}`);
       return false;
     }
+    // The probe is released by the dying process, not by our SIGTERM: a write
+    // sent before it exits hits "USB busy". Wait (bounded) for it to go.
+    if (!(await this.waitForPidExit(lock.pid))) {
+      this.slog(`foreign session pid=${lock.pid} ignored SIGTERM; the probe may still be held`);
+    }
+    this.removeLockFile();
+    return true;
+  }
+  /** The lock file, or undefined when it is absent/corrupt. */
+  private ownLockFile(): SessionLock | undefined {
+    try {
+      return readSessionLock(readFileSync(this.lockPath(), "utf8"));
+    } catch {
+      return undefined;
+    }
+  }
+  private removeLockFile(): void {
     try {
       unlinkSync(this.lockPath());
     } catch {
       /* best-effort */
     }
-    return true;
+  }
+  /**
+   * Ask before taking the probe from another session, and report whether it is
+   * STILL held afterwards. `false` means the bus is ours (nobody else had it,
+   * or the takeover succeeded).
+   */
+  private async foreignSessionStillHeld(): Promise<boolean> {
+    const before = this.ownLockFile();
+    if (!isForeignSessionLock(before, { childPid: this.childPid, hostPid: process.pid })) {
+      return false;
+    }
+    await this.killForeignSession();
+    const after = this.ownLockFile();
+    return isForeignSessionLock(after, { childPid: this.childPid, hostPid: process.pid });
+  }
+  /** Bounded poll for a pid to disappear; false when it is still there. */
+  private async waitForPidExit(pid: number, timeoutMs = 2000, stepMs = 50): Promise<boolean> {
+    for (let waited = 0; ; waited += stepMs) {
+      if (!isPidAlive(pid)) {
+        return true;
+      }
+      if (waited >= timeoutMs) {
+        return false;
+      }
+      await new Promise<void>((resolve) => { setTimeout(resolve, stepMs); });
+    }
   }
   private async claimProbe(projectName: string): Promise<boolean> {
     let raw: string;
@@ -879,20 +920,14 @@ export class LivePanelProvider {
     if (lock === undefined) {
       return true;
     }
-    let alive = false;
-    try {
-      process.kill(lock.pid, 0);
-      alive = true;
-    } catch {
-      alive = false;
+    // Already ours (a start that raced another start): claiming it again would
+    // prompt "別セッションがプローブ使用中です" about ourselves.
+    if (lock.pid === this.childPid || lock.pid === process.pid) {
+      return true;
     }
-    if (!alive) {
+    if (!isPidAlive(lock.pid)) {
       this.slog(`stale lock from pid=${lock.pid} (${lock.project}); taking over`);
-      try {
-        unlinkSync(this.lockPath());
-      } catch {
-        /* best-effort */
-      }
+      this.removeLockFile();
       return true;
     }
     const choice = await vscode.window.showWarningMessage(
@@ -1363,6 +1398,7 @@ export class LivePanelProvider {
       return;
     }
     await this.storage?.update(WATCHLIST_KEY, merged);
+    await this.storage?.update(WATCHLIST_INIT_KEY, true);
     const fresh = merged.slice(current.length);
     this.slog(`watchlist: +${incoming.join(",")} (${current.length} -> ${merged.length})${fresh.length > 0 ? ` [${fresh.join(",")}]` : ""}`);
     this.post({ kind: "live-watchlist", names: merged });
@@ -1382,6 +1418,9 @@ export class LivePanelProvider {
     const kept = before.filter((n) =>
       !drop.some((d) => isUnder(n, d)));
     await this.storage?.update(WATCHLIST_KEY, kept);
+    // An explicit removal is a decision even when it empties the list, so the
+    // next build must not auto-seed it back.
+    await this.storage?.update(WATCHLIST_INIT_KEY, true);
     this.slog(`watchlist: -${drop.join(",")} (${kept.length} left)`);
     this.post({ kind: "live-watchlist", names: kept });
     const removed = before.length - kept.length;
@@ -1631,8 +1670,16 @@ export class LivePanelProvider {
    */
   private async writeFlow(name: string, value: string): Promise<void> {
     const stamp = new Date().toISOString();
-    // 書き込み時はプローブを強制的に奪取する。
-    await this.killForeignSession();
+    // 書き込み時はプローブを強制的に奪取する — but the answer is binding: a
+    // declined takeover means another session still owns the bus, and writing
+    // anyway would push a value through a probe we do not hold. The old code
+    // ignored killForeignSession()'s result entirely.
+    if (await this.foreignSessionStillHeld()) {
+      const reason = "refused: 別のセッションがプローブを保持しています (停止してから書き込んでください)";
+      this.channel.appendLine(`[live-write] ${stamp} REFUSED(${reason}) ${name} value=${value}`);
+      this.post({ kind: "live-write-result", name, ok: false, message: reason });
+      return;
+    }
     // `name` and `ok` ride along with every result: the sidebar marks the row
     // that asked, and a refusal (six ways upstream of here) has to be
     // attributable to one row rather than to a single shared line.
@@ -1855,8 +1902,16 @@ export class GraphPanelProvider {
     if (this.archive.length > GraphPanelProvider.ARCHIVE_MAX) {
       this.archive.splice(0, this.archive.length - GraphPanelProvider.ARCHIVE_MAX);
     }
+    // Only the plotted series cross the webview bridge. The Live table posts
+    // the whole watchlist batch (hundreds of names at 100Hz); forwarding that
+    // unfiltered made the panel decode every watched name into a Map miss and
+    // serialise them over postMessage for nothing. The graph has no use for a
+    // name it does not plot.
     if (this.postTarget !== undefined) {
-      void this.postTarget.postMessage({ kind: "live-sample", samples });
+      const plotted = samples.filter((s) => wanted.has(s.name));
+      if (plotted.length > 0) {
+        void this.postTarget.postMessage({ kind: "live-sample", samples: plotted });
+      }
     }
   }
   private postTarget: vscode.Webview | undefined;
@@ -1962,18 +2017,9 @@ function liveForeignHolderPid(ownPid?: number): number | undefined {
     return undefined;
   }
   const lock = readSessionLock(raw);
-  if (lock === undefined) {
-    return undefined;
-  }
-  if (ownPid !== undefined && lock.pid === ownPid) {
-    return undefined;
-  }
-  try {
-    process.kill(lock.pid, 0);
-  } catch {
-    return undefined;
-  }
-  return lock.pid;
+  return isForeignSessionLock(lock, { childPid: ownPid, hostPid: process.pid })
+    ? lock?.pid
+    : undefined;
 }
 
 /**
@@ -2036,7 +2082,9 @@ async function flashElfFlow(
     void vscode.window.showErrorMessage(checked.error);
     return;
   }
-  if (await checkProbeConflict(channel)) {
+  // This window's own session is about to be stopped for the flash, so it is
+  // not a conflict; only a foreign holder is.
+  if (await checkProbeConflict(channel, { ownPid: live?.pollPid })) {
     return;
   }
   const elfPath = await vscode.window.showInputBox({
@@ -2133,7 +2181,7 @@ async function buildAndFlashFlow(
     void vscode.window.showErrorMessage(checked.error);
     return;
   }
-  if (await checkProbeConflict(channel)) {
+  if (await checkProbeConflict(channel, { ownPid: live?.pollPid })) {
     return;
   }
   const elfPath = await buildProjectFlow(channel, panel, collection, live, scriptsDir);

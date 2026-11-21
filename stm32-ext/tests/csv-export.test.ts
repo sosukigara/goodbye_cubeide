@@ -140,8 +140,14 @@ describe("live CSV export reads the session file in bounded chunks", () => {
     const { path } = makeSessionCsv(FIXTURE_BYTES);
     const dest = `${path}.out`;
 
-    // A synchronous whole-file read would starve this timer for its whole
+    // A synchronous whole-file read would starve this macrotask for its whole
     // duration: the copy returns before the loop ever gets a turn.
+    //
+    // setImmediate, not setTimeout: the copy yields with setImmediate, so this
+    // counts loop turns rather than wall-clock milliseconds. setTimeout(0) is
+    // clamped to 1 ms by Node, so on a fast machine a 30-chunk copy finishes in
+    // under 5 timer ticks and the count says nothing about whether the loop was
+    // handed back.
     let ticks = 0;
     let running = true;
     const spin = (): void => {
@@ -149,9 +155,9 @@ describe("live CSV export reads the session file in bounded chunks", () => {
         return;
       }
       ticks += 1;
-      setTimeout(spin, 0);
+      setImmediate(spin);
     };
-    setTimeout(spin, 0);
+    setImmediate(spin);
 
     const result = await copyCsvToFile(path, dest, { chunkBytes: CHUNK_BYTES });
     running = false;
@@ -162,23 +168,29 @@ describe("live CSV export reads the session file in bounded chunks", () => {
     expect(ticks).toBeGreaterThan(8);
   }, 30_000);
 
-  it("never holds more than one chunk in memory at a time", async () => {
+  it("never reads more than one chunk at a time", async () => {
     const { path, bytes } = makeSessionCsv(FIXTURE_BYTES);
     const dest = `${path}.out`;
 
-    const before = process.memoryUsage().heapUsed;
-    let peak = before;
+    // Bounded memory is a property of the read size, not of the heap: heapUsed
+    // peaks at several times the file for a correct chunked copy (one Buffer of
+    // churn per read until the next GC), so a heap-delta assertion would fail
+    // for the right implementation and pass for the wrong machine. Each
+    // progress callback is one completed read, so the deltas are exactly the
+    // reads: a whole-file read reports one delta the size of the file.
+    let lastDone = 0;
+    let biggestRead = 0;
     const result = await copyCsvToFile(path, dest, {
       chunkBytes: CHUNK_BYTES,
-      // Sampled inside the copy: a whole-file read peaks here at the file size.
-      onProgress: () => {
-        peak = Math.max(peak, process.memoryUsage().heapUsed);
+      onProgress: (done) => {
+        biggestRead = Math.max(biggestRead, done - lastDone);
+        lastDone = done;
       },
     });
     expect(result).toMatchObject({ ok: true });
-    // Generous: Buffer churn is not exact, but a whole-file read of a 2 MB file
-    // as one string plus one Buffer cannot stay under 512 KB of growth.
-    expect(peak - before).toBeLessThan(bytes / 4);
+    expect(biggestRead).toBeLessThanOrEqual(CHUNK_BYTES);
+    // And many reads, not one: ~32 for this fixture.
+    expect(bytes / biggestRead).toBeGreaterThan(8);
   }, 30_000);
 
   it("the default chunk size is the one the host ships", () => {

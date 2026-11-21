@@ -7,8 +7,8 @@
 // the SWD/JTAG choice is a DAP-layer property pyOCD derives from the probe,
 // so `stm32ext.interface` does not appear in the command line here.
 
-import { existsSync, statSync } from "node:fs";
-import { delimiter, join } from "node:path";
+import { existsSync } from "node:fs";
+import { resolveTool } from "../build/backend.js";
 import {
   describeElf,
   isProbeNotFound,
@@ -57,30 +57,15 @@ export function buildPyocdCommand(
 
 export function resolvePyocdPath(configured: string): { cli: string; searched: string[]; found: boolean } {
   const name = configured.trim() || DEFAULT_PYOCD;
-  const searched: string[] = [];
-  if (name.includes("/")) {
-    searched.push(name);
-    return { cli: name, searched, found: isExecutable(name) };
-  }
-  for (const dir of (process.env["PATH"] ?? "").split(delimiter)) {
-    if (!dir) {
-      continue;
-    }
-    const full = join(dir, name);
-    searched.push(full);
-    if (isExecutable(full)) {
-      return { cli: full, searched, found: true };
-    }
-  }
-  return { cli: name, searched, found: false };
-}
-
-function isExecutable(path: string): boolean {
-  try {
-    return statSync(path).isFile();
-  } catch {
-    return false;
-  }
+  // Delegated to the build resolver on purpose. It owns the full search list —
+  // PATH, the directories a desktop-launched VS Code truncates
+  // (~/.local/bin), and the first-run setup venv — and pyocd is installed by
+  // the SAME setup into that SAME venv. A private PATH-only loop here meant a
+  // machine whose only pyocd came from setup could monitor live values (the
+  // sidecar runs on the venv interpreter) but never flash: the button said
+  // "pyocd was not found on PATH" about a pyocd the extension had installed.
+  const found = resolveTool(name);
+  return { cli: found.path, searched: [...found.searched], found: found.found };
 }
 
 export function isElf(path: string): boolean {
@@ -141,9 +126,12 @@ export async function runPyocdFlash(
     return {
       ok: false, command, retryable: false,
       message:
-        "pyocd was not found on PATH.\n"
+        "pyocd was not found on PATH, in ~/.local/bin, or in the extension's setup venv.\n"
         + `searched:\n${resolved.searched.map((s) => `  - ${s}`).join("\n")}\n`
-        + "Install it with `pip install --user pyocd` (the live monitor needs it too).",
+        + "With stm32ext.autoSetup on (the default), reload the window and the extension "
+        + "installs pyocd into its own venv. Otherwise install it yourself "
+        + "(https://pyocd.io); on current Debian/Ubuntu `pip install --user pyocd` is "
+        + "refused by PEP 668, so use a venv or pipx.",
       details: headDetails,
     };
   }

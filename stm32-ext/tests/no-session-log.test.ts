@@ -44,6 +44,7 @@ vi.mock("../src/probe/conflict", () => ({
 
 import { LivePanelProvider } from "../src/extension.js";
 import type { ElfResolution } from "../src/live/elfResolver.js";
+import { WATCHLIST_INIT_KEY, WATCHLIST_KEY } from "../src/live/manager.js";
 import * as vscode from "vscode";
 import type { OutputChannel } from "vscode";
 
@@ -55,7 +56,7 @@ const RESOLUTION = {
   ],
 } as unknown as ElfResolution;
 
-function liveWith(watch: string[]): {
+function liveWith(watch: string[], initialized = true): {
   live: LivePanelProvider;
   channel: { lines: string[]; appendLine(l: string): void };
   store: Map<string, unknown>;
@@ -67,7 +68,13 @@ function liveWith(watch: string[]): {
     },
   };
   const live = new LivePanelProvider(channel as unknown as OutputChannel);
-  const store = new Map<string, unknown>([["stm32ext.liveWatch", watch]]);
+  // initialized=true is the normal steady state: the first resolution already
+  // auto-seeded (or the user edited) the list, so an empty list means "nothing
+  // watched", not "never decided".
+  const store = new Map<string, unknown>([
+    [WATCHLIST_KEY, watch],
+    [WATCHLIST_INIT_KEY, initialized],
+  ]);
   live.configure(join(tmpdir(), "stm32ext-scripts"), {
     get: (k: string): unknown => store.get(k),
     update: (k: string, v: unknown): Promise<void> => {
@@ -133,6 +140,21 @@ describe("nothing-pollable start attempts are reported once", () => {
   });
 });
 
+describe("auto-monitor seeds the watchlist once, then respects the user", () => {
+  it("seeds every resolved leaf when nothing has been decided yet", () => {
+    const { store } = liveWith([], false);
+    expect(store.get(WATCHLIST_KEY)).toEqual(["sys.loop_hz"]);
+    expect(store.get(WATCHLIST_INIT_KEY)).toBe(true);
+  });
+
+  it("does not refill a list the user emptied", () => {
+    // An explicit removal of the last variable is a decision: the next
+    // resolution must not auto-seed everything back over it.
+    const { store } = liveWith([], true);
+    expect(store.get(WATCHLIST_KEY)).toEqual([]);
+  });
+});
+
 describe("reload: the built elf+mcu survive in storage for re-resolution", () => {
   it("persists the built elf+mcu so a reload can re-resolve", () => {
     const { store } = liveWith([]);
@@ -188,7 +210,6 @@ describe("reload: the built elf+mcu survive in storage for re-resolution", () =>
 
 // The CSV button posts "export-csv", but handleLiveAction only knew "csv", so
 // the action fell through to writeFlow("","") and every press tried to write an
-// empty address instead of exporting.
 // empty address instead of exporting.
 describe("live-export-csv reaches exportCsv", () => {
   it("exports instead of falling through to a write", async () => {

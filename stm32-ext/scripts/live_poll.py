@@ -762,7 +762,15 @@ def main(argv=None):
         if not ok:
             print("pyocd install failed; continuing with --mock only if given.")
 
-    watch, skipped = load_watchlist(args.resolution)
+    # A missing or unreadable resolution file used to escape as a traceback and
+    # exit 1, which the host can only report as "unknown". Name the file and use
+    # the documented "nothing pollable" code so the log says what to do instead.
+    try:
+        watch, skipped = load_watchlist(args.resolution)
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        err(f"cannot read resolution file {args.resolution!r}: {e} "
+            f"(build first so elf_resolve.py writes it)")
+        return EXIT_NO_WATCH
     write_queue = queue.Queue()
     live_write.start_stdin_reader(write_queue)
 

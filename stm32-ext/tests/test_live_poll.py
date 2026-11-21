@@ -624,6 +624,24 @@ def test_mock_reports_a_torn_run_as_a_budget_failure(tmp_path, capsys):
     assert out.read_text(encoding="utf-8").splitlines() == ["timestamp,address,name,value"]
 
 
+def test_missing_resolution_file_names_the_file_and_exits_6(tmp_path, capsys):
+    """A missing resolution file used to escape as a traceback, exit 1.
+
+    The host maps 3/4/5/6 onto user-facing reasons and can only call anything
+    else "unknown", so the sidecar names the file it could not read and uses the
+    documented "nothing pollable" code instead of crashing.
+    """
+    out = tmp_path / "live.csv"
+    code = live_poll.main(["--resolution", str(tmp_path / "absent.json"),
+                           "--out", str(out), "--mock"])
+    assert code == live_poll.EXIT_NO_WATCH == 6
+    captured = capsys.readouterr()
+    assert "absent.json" in captured.err
+    assert "Traceback" not in captured.err
+    # Nothing was polled, so nothing may be written or claimed as a session.
+    assert not out.exists()
+
+
 def test_no_probe_attached_fails_fast_instead_of_waiting_forever(monkeypatch, tmp_path, capsys):
     """An unplugged ST-LINK is the most common reason a session cannot start.
 

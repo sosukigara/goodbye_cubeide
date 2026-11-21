@@ -75,7 +75,11 @@ function wireLiveToGraph(
 }
 
 describe("live -> graph sample forwarding (todo2)", () => {
-  it("forwards every Live table batch to the Graph panel exactly once", () => {
+  const select = (graph: GraphPanelProvider, name: string): void => {
+    (graph as unknown as Record<string, (n: string) => void>)["addSeries"]!(name);
+  };
+
+  it("forwards exactly the plotted series of each Live table batch, once", () => {
     const live = new LivePanelProvider(CHANNEL);
     const graph = new GraphPanelProvider();
     const livePosted: unknown[] = [];
@@ -87,6 +91,9 @@ describe("live -> graph sample forwarding (todo2)", () => {
     live.setPostTarget(fakeView(livePosted).webview as never);
     graph.mount(fakeView(graphPosted).webview as never);
     wireLiveToGraph(live, graph);
+    // One of the two watched names is plotted: the other must not cross the
+    // bridge (the whole watchlist is hundreds of names at 100Hz).
+    select(graph, "sys.loop_hz");
 
     // Mock CSV ingest through the same tail path the poller uses.
     const { samples } = readNewSamples(MOCK_CSV, 0);
@@ -100,12 +107,25 @@ describe("live -> graph sample forwarding (todo2)", () => {
       (m) => (m as { kind?: string }).kind === "live-sample",
     );
     expect(liveSamples).toHaveLength(1);
-    // Exactly-once delivery to the Graph panel.
+    // The Live table still gets everything (it draws every watched row).
+    expect((liveSamples[0] as { samples?: unknown }).samples).toBe(samples);
+    // Exactly-once delivery to the Graph panel, filtered to the series.
     expect(graphSamples).toHaveLength(1);
-    expect((graphSamples[0] as { samples?: unknown }).samples).toBe(samples);
-    // Graph series grows: both ingested variable names are present.
-    const names = (samples as { name: string }[]).map((s) => s.name).sort();
-    expect(names).toEqual(["sys.loop_hz", "sys.uptime_ms"]);
+    const sent = (graphSamples[0] as { samples?: { name: string }[] }).samples ?? [];
+    expect(sent.map((s) => s.name)).toEqual(["sys.loop_hz"]);
+  });
+
+  it("posts nothing when no series is plotted", () => {
+    const live = new LivePanelProvider(CHANNEL);
+    const graph = new GraphPanelProvider();
+    const graphPosted: unknown[] = [];
+    graph.mount(fakeView(graphPosted).webview as never);
+    wireLiveToGraph(live, graph);
+
+    const { samples } = readNewSamples(MOCK_CSV, 0);
+    live.pushSamples(samples);
+    expect(graphPosted.filter((m) => (m as { kind?: string }).kind === "live-sample"))
+      .toHaveLength(0);
   });
 
   it("re-setting the sink overwrites (no duplicate subscriptions)", () => {
@@ -116,6 +136,7 @@ describe("live -> graph sample forwarding (todo2)", () => {
     wireLiveToGraph(live, graph);
     // A second registration must NOT create a second delivery path.
     wireLiveToGraph(live, graph);
+    select(graph, "sys.loop_hz");
 
     const { samples } = readNewSamples(MOCK_CSV, 0);
     live.pushSamples(samples);

@@ -1,6 +1,10 @@
 # Build output — regenerate with `npm run compile`
 out/
 build-ext/
+# A generated ninja file is never source: it belongs in build-ext/ (build/cli.ts
+# and the extension both write it there). One committed by accident shipped an
+# empty build.ninja inside the VSIX.
+build.ninja
 *.o
 *.elf
 *.map

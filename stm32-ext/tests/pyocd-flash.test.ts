@@ -1,9 +1,10 @@
 // pyOCD flash transport: argv shape, the same safety rails as the
 // CubeProgrammer path (confirmless refused, verify+reset implicit, one retry).
 import { describe, expect, it, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setVenvDir } from "../src/env/venv.js";
 import { stubCliOnPath } from "./helpers/stub-cli.js";
 import { DEFAULT_FLASH_SETTINGS, type FlashSettings } from "../src/flash/backend.js";
 import {
@@ -147,6 +148,24 @@ describe("flash helpers", () => {
   it.skipIf(!resolvePyocdPath("").found)("finds pyocd when it is installed", () => {
     expect(resolvePyocdPath("").cli).toMatch(/pyocd/);
     expect(resolvePyocdPath("").found).toBe(true);
+  });
+  it("searches the setup venv, where autoSetup actually installs pyocd", () => {
+    // The regression: the lookup was a private PATH-only loop, so a machine
+    // whose only pyocd came from first-run setup could watch live values (the
+    // sidecar runs on the venv interpreter) but never flash.
+    const dir = mkdtempSync(join(tmpdir(), "stm32ext-venv-pyo-"));
+    writeFileSync(join(dir, "pyvenv.cfg"), "");
+    const bin = join(dir, "bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "pyocd"), "", { mode: 0o755 });
+    setVenvDir(dir);
+    try {
+      const resolved = resolvePyocdPath("");
+      expect(resolved.searched).toContain(join(bin, "pyocd"));
+      expect(resolved.found).toBe(true);
+    } finally {
+      setVenvDir(undefined);
+    }
   });
   it("only accepts a real .elf path", () => {
     // Built in a temp dir rather than against build-ext/: this asserts the

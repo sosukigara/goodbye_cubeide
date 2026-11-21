@@ -1,12 +1,12 @@
 // Coalesces watchlist changes into one host call per burst.
 //
-// Both surfaces post ONE MESSAGE PER NAME: the graph panel expands a struct
-// prefix into up to MAX_BULK (32) `graph-add` messages for a single click
-// (graphPanel.ts add()), and the sidebar loops the same way over a
-// comma-separated input. Each one reached `addNames` -> `restart()` ->
-// `startSession()` -> stop + spawn, so one user action could restart the
-// sidecar 32 times. Consecutive stop/spawn against the same probe is what
-// makes the USB claim race and fail with `Errno 16 Resource busy`.
+// Both surfaces post ONE MESSAGE PER NAME: adding a struct name expands to
+// every leaf under it (hundreds of `add-names` messages for one click) and
+// the sidebar loops the same way over a comma-separated input. Each one
+// reached `addNames` -> `restart()` -> `startSession()` -> stop + spawn, so
+// one user action could restart the sidecar once per leaf. Consecutive
+// stop/spawn against the same probe is what makes the USB claim race and fail
+// with `Errno 16 Resource busy`.
 //
 // The batch therefore keeps only the FINAL intent per name (add-then-remove
 // is a remove) and flushes one `add-names` and one `remove-names` call. The

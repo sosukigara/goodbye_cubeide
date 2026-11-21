@@ -6,7 +6,10 @@ import {
   extraArgs,
   filterWatchedSymbols,
   hasWindow,
+  isForeignSessionLock,
+  isPidAlive,
   isProbeBusyOutput,
+  isUsablePid,
   parseNmSymbol,
   parseNmSymbolSize,
   partitionOutOfWindowSymbols,
@@ -118,7 +121,51 @@ describe("live session manager contracts", () => {
     expect(readSessionLock("garbage{")).toBeUndefined();
     expect(readSessionLock('{"pid":"x"}')).toBeUndefined();
   });
-  it("probe-busy output detected (Resource busy)", () => {
+});
+
+describe("a lock pid may never reach kill() as a process group", () => {
+  // process.kill(0, SIGTERM) signals the extension host's OWN process group and
+  // kill(-7) another one: a corrupt lock file used to be able to take VSCode
+  // down. Every unusable pid must read as "no lock" at the parse choke point.
+  const unusable = [0, -7, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 60];
+  for (const pid of unusable) {
+    it(`pid ${String(pid)} parses as no lock`, () => {
+      expect(isUsablePid(pid)).toBe(false);
+      expect(readSessionLock(JSON.stringify({ pid, project: "x", started: "t" }))).toBeUndefined();
+      expect(isPidAlive(pid)).toBe(false);
+    });
+  }
+  it("keeps a real pid", () => {
+    expect(isUsablePid(1234)).toBe(true);
+    expect(isPidAlive(process.pid)).toBe(true);
+    expect(isPidAlive(0)).toBe(false);
+  });
+});
+
+describe("own and foreign session locks are told apart", () => {
+  const lock = { pid: 4242, project: "unit_omni3", started: "t" };
+  const alive = (): boolean => true;
+  it("our own sidecar pid is not a foreign session", () => {
+    // The lock records the sidecar's pid; comparing against the host pid only
+    // (the old force-take check) classified every own session as foreign.
+    expect(isForeignSessionLock(lock, { childPid: 4242, hostPid: 999 }, alive)).toBe(false);
+  });
+  it("our own host pid is not a foreign session", () => {
+    expect(isForeignSessionLock(lock, { childPid: undefined, hostPid: 4242 }, alive)).toBe(false);
+  });
+  it("a live other pid is a foreign session", () => {
+    expect(isForeignSessionLock(lock, { childPid: 1, hostPid: 2 }, alive)).toBe(true);
+  });
+  it("a dead other pid is not a session at all", () => {
+    expect(isForeignSessionLock(lock, { childPid: 1, hostPid: 2 }, () => false)).toBe(false);
+  });
+  it("no lock is not a foreign session", () => {
+    expect(isForeignSessionLock(undefined, { childPid: 1, hostPid: 2 }, alive)).toBe(false);
+  });
+});
+
+describe("probe-busy output", () => {
+  it("is detected by its usb error text", () => {
     expect(isProbeBusyOutput("usb.core.USBError: [Errno 16] Resource busy")).toBe(true);
     expect(isProbeBusyOutput("all green")).toBe(false);
     expect(PROBE_BUSY_MESSAGE).toContain("⏹ 停止");

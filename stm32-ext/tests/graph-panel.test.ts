@@ -493,7 +493,7 @@ describe("graph panel surface", () => {
     expect(script).not.toContain("paintPerf");
     expect(script).not.toContain("PERF_RING");
     expect(script).not.toContain("G.frames");
-    // the footer line the user kept: 系列 / 表示 / 保持上限 / 未登録
+    // the footer line the user kept: 系列 / 表示 / 保持上限
     expect(html).toContain('data-testid="graph-status"');
   });
 
@@ -1204,13 +1204,13 @@ describe("graph panel name completion", () => {
   });
 });
 
-describe("graph panel 未登録 counter", () => {
-  it("counts the names of the CURRENT batch, not every name ever forwarded", () => {
-    // The host forwards the whole sample batch unfiltered, so every watched
-    // name that is not a plotted series lands here. G.unknown was a Set that
-    // was never cleared: it froze at the high-water mark of the whole session
-    // (a stale 389 after the user un-watched those names) instead of counting
-    // what is arriving now.
+describe("the graph ignores names it does not plot", () => {
+  it("drops unwatched samples instead of counting them forever", () => {
+    // The host filters the batch to the plotted series (GraphPanelProvider.
+    // pushSamples), so a stray name never arrives in the product. If one does,
+    // it must not create a series, a point or a footer warning: the old
+    // "未登録 N" counter showed the size of the watchlist next to the series
+    // count and read as N failed variables.
     const p = boot(["sys.loop_hz"]);
     p.post(types(indexOf("sys.loop_hz")));
     p.post({
@@ -1218,27 +1218,13 @@ describe("graph panel 未登録 counter", () => {
       samples: [sample("sys.loop_hz", 1, 0), sample("nav.a", 1, 0), sample("nav.b", 1, 0)],
     });
     p.flush();
-    expect(p.byId("graph-status").textContent).toContain("未登録 2");
-
-    p.post({
-      kind: "live-sample",
-      samples: [sample("sys.loop_hz", 2, 10), sample("nav.a", 2, 10)],
-    });
+    expect(p.byId("graph-status").textContent).toContain("系列 1 / 表示 1");
+    expect(p.byId("graph-status").textContent).not.toContain("未登録");
+    // A later series addition still starts clean: no backlog of unknown names.
+    p.post({ kind: "graph-series", series: [{ name: "sys.loop_hz" }, { name: "nav.a" }] });
+    p.post({ kind: "live-sample", samples: [sample("sys.loop_hz", 2, 10), sample("nav.a", 2, 10)] });
     p.flush();
-    expect(p.byId("graph-status").textContent).toContain("未登録 1");
-
-    // A name that becomes a plotted series stops counting at once.
-    p.post({
-      kind: "graph-series",
-      series: [{ name: "sys.loop_hz" }, { name: "nav.a" }],
-    });
-    p.post({
-      kind: "live-sample",
-      samples: [sample("sys.loop_hz", 3, 20), sample("nav.a", 3, 20), sample("nav.b", 3, 20)],
-    });
-    p.flush();
-    expect(p.byId("graph-status").textContent).toContain("未登録 1");
-    expect(p.byId("graph-status").textContent).not.toContain("未登録 2");
+    expect(p.byId("graph-status").textContent).toContain("系列 2 / 表示 2");
   });
 });
 

@@ -145,7 +145,7 @@ const GRAPH_SCRIPT = `var __SEED = __GRAPH_SEED__;`
   + `}`
   // DWARF carries no unit, so the unit is derived from the symbol suffix.
   + `const UNITS = [['_khz', 'kHz'], ['_hz', 'Hz'], ['_ms', 'ms'], ['_us', 'us'], ['_ns', 'ns'], ['_pct', '%'], ['_percent', '%'], ['_degc', 'degC'], ['_celsius', 'degC'], ['_temp', 'degC'], ['_volt', 'V'], ['_voltage', 'V'], ['_current', 'A'], ['_amps', 'A'], ['_rpm', 'rpm'], ['_mm', 'mm']];`
-  + `const G = { series: new Map(), order: [], types: new Map(), windowMs: __DEFAULT_WINDOW_MS__, queued: 0, readoutQueued: 0, dpr: 0, unknown: new Set() };`
+  + `const G = { series: new Map(), order: [], types: new Map(), windowMs: __DEFAULT_WINDOW_MS__, queued: 0, readoutQueued: 0, dpr: 0 };`
   + `const canvas = q('[data-testid="graph-canvas"]');`
   + `const wrap = q('[data-testid="graph-wrap"]');`
   + `const legend = q('[data-testid="graph-selected"]');`
@@ -258,7 +258,7 @@ const GRAPH_SCRIPT = `var __SEED = __GRAPH_SEED__;`
   + `function ingest(sm) {`
   + ` if (!sm || typeof sm.name !== 'string' || sm.name === '') return;`
   + ` const s = G.series.get(sm.name);`
-  + ` if (!s) { G.unknown.add(sm.name); return; }`
+  + ` if (!s) return;`
   + ` const d = decode(sm.name, sm.value);`
   + ` s.lastLabel = d.label;`
   + ` const t = Date.parse(sm.timestamp);`
@@ -415,9 +415,8 @@ const GRAPH_SCRIPT = `var __SEED = __GRAPH_SEED__;`
   // grid, and its label is drawn in the series colour just above it.
   + `function paintStatus() {`
   + ` if (!statusBox) return;`
-  + ` const miss = G.unknown.size;`
   + ` statusBox.textContent = '系列 ' + G.order.length + ' / 表示 ' + visible().length`
-  + `  + ' / 保持上限 ' + MAX_POINTS + '点' + (miss > 0 ? ' / 未登録 ' + miss : '');`
+  + `  + ' / 保持上限 ' + MAX_POINTS + '点';`
   + `}`
   + `function fail(msg) { if (errBox) { errBox.textContent = msg; errBox.className = 'err'; } }`
   + `function note(msg) { if (noteBox) { noteBox.textContent = msg; noteBox.className = 'note'; } }`
@@ -619,11 +618,9 @@ const GRAPH_SCRIPT = `var __SEED = __GRAPH_SEED__;`
   + `window.addEventListener('message', (e) => {`
   + ` const m = (e && e.data) || {};`
   + ` const k = m.kind;`
-  // The host forwards the whole batch unfiltered, so 未登録 is recomputed per
-  // batch: it counts the watched names arriving now that are not plotted
-  // series. A cumulative set froze at the session high-water mark.
+  // The host forwards only the plotted series (GraphPanelProvider.pushSamples
+  // filters), so any other name that still arrives is ignored by ingest().
   + ` if (k === 'live-sample' && Array.isArray(m.samples)) {`
-  + `  G.unknown.clear();`
   + `  for (let i = 0; i < m.samples.length; i += 1) ingest(m.samples[i]);`
   + `  scheduleReadout();`
   + `  schedule();`
